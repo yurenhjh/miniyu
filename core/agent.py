@@ -29,7 +29,10 @@ from core.agent_config import load_config
 from core.conversation import Conversation, SessionManager
 from core.llm_client import LLMClient, DeterministicBrain, OpenAICompatibleClient, create_llm_client, ChatResponse
 from core.os_service_api import OSServiceAPI
-from core.safety import get_meta, preview, requires_confirmation, ConfirmationDenied
+from core.safety import (
+    get_meta, preview, ConfirmationDenied,
+    should_confirm, resolve_authz_level,
+)
 
 
 # GUI 类工具列表（执行后建议截图回传 LLM）
@@ -174,6 +177,9 @@ class Agent:
 
         self.max_steps = agent_cfg.get("max_steps", 15)
         self.confirm_high_risk = agent_cfg.get("confirm_high_risk", True)
+        # 授权档位（base/advanced/full）：决定哪些高危操作要弹确认。优先 agent.authorization；
+        # confirm_high_risk 保留为旧字段兼容别名（其值并入 resolve 判定）。
+        self.authz_level = resolve_authz_level(agent_cfg)
         self.window_size = agent_cfg.get("history_window", 20)
 
         # 记忆压缩（对标 AutoGPT 的上下文窗口管理）
@@ -589,8 +595,8 @@ class Agent:
         """执行单个底层工具（含安全确认）"""
         meta = get_meta("tool", name)
 
-        # 高危操作 + 确认模式开启 → 走确认门
-        if self.confirm_high_risk and requires_confirmation(meta["risk"]):
+        # 高危操作 + 当前授权档位要求确认 → 走确认门
+        if should_confirm(self.authz_level, name, meta["risk"]):
             pv = preview("tool", name, args, meta)
             if self.confirm_handler:
                 try:
@@ -633,8 +639,8 @@ class Agent:
 
         meta = get_meta("skill", name)
 
-        # 高危操作 + 确认模式开启 → 走确认门
-        if self.confirm_high_risk and requires_confirmation(meta["risk"]):
+        # 高危操作 + 当前授权档位要求确认 → 走确认门
+        if should_confirm(self.authz_level, name, meta["risk"]):
             pv = preview("skill", name, args, meta)
             if self.confirm_handler:
                 try:

@@ -52,6 +52,9 @@ vision_bridge:
 agent:
   max_steps: 15
   confirm_high_risk: true
+  # 授权档位：base=基础授权(全部高危需确认，现状) / advanced=高级授权(仅永久删除文件需确认)
+  #          / full=全自动(从不确认，含删除)。authorization 优先于上面的 confirm_high_risk（旧字段兼容）
+  authorization: base
   history_window: 20
   enable_planning: false
 

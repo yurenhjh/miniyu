@@ -4,7 +4,7 @@
 > 多步文件系统工具调用；证据见 `docs/evidence/agent_qwen_live.md`。本文保留设计思路与关键接口，实现中按实际做了调整。
 > 目标读者：本组自己 + 之后接手的 Claude 会话（开工前先读本文 + 文末"已落地决策"第 9 节）。
 > 背景：课程 = Agentic OS，核心题眼是"自然语言 → Agent 自动调 OS 工具"。现有底层已很扎实
-> （57 工具 / 25 技能 / 370 测试全过 / 真机 QQ·Edge·豆包 / Agent 可调组合技能 / 截图理解 / 邮件全链路 send_email）；彼时缺一层 LLM 驱动的"脑"，由本层补齐
+> （57 工具 / 25 技能 / 391 测试全过 / 真机 QQ·Edge·豆包 / Agent 可调组合技能 / 截图理解 / 邮件全链路 send_email）；彼时缺一层 LLM 驱动的"脑"，由本层补齐
 > （后端 = 阿里云百炼 qwen3.5-plus，已真机验证）。
 > 多组联合怕被拖累 → 老师建议多做能自证完整的亮点，本层即为此做。
 
@@ -207,8 +207,9 @@ class Conversation:
    base_url 带 `/v1`；key 经环境变量 `AGENT_LLM_*` 注入，**未写入仓库任何文件**；真机验证见 `docs/evidence/agent_qwen_live.md`。
 3. **"离线确定性脑"的定位**：落地为**双模式**——默认 `deterministic` 离线脑（零依赖，可演示/单测），
    切 `openai_compatible` 即真实 function-calling；非流式与流式两种真机均已跑通。
-4. **确认门节奏**：落地为**每步确认**——HIGH 工具经安全确认门（CLI 弹确认 / Web 模态框），用户允许/拒绝；
-   `agent_config` 的 `confirm_high_risk`（默认 True）可整体开关。
+4. **确认门节奏**：落地为**按授权档位确认**——HIGH 工具经安全确认门（CLI 弹确认 / Web 模态框），用户允许/拒绝；
+   档位 `agent.authorization`：base=全部 HIGH 需确认（默认=现状）；advanced=仅永久删除文件需确认；full=从不确认。
+   旧 `agent_config.confirm_high_risk`（默认 True）保留为兼容开关（false ⇔ full）。
 5. **function-calling 形态**：落地为双通道——**原生 tools/tool_use** 为主，另加"LLM 输出 JSON 文本再由本地解析"兜底
    （JSON 兜底为真机修复项，见进度日志 2026-09-06）。
 6. **组间契约**：已定——第4组改**自研自证**、不再依赖第 3 组联调；Agent 层错误码沿用组内 `OSServiceAPI` 契约（`TOOL_ERROR` 等回传）。
@@ -217,6 +218,7 @@ class Conversation:
 9. **Agent 截图理解 + 过程产物生命周期（2026-09-06，ADR 0009）**：视觉通道两路自适应——视觉模型（`supports_vision=True`，qwen3.5-plus 原生多模态已真机探测通过）截图以真 base64 独立观测消息回传；无视觉模型走项目内视觉桥（config.yaml 的 `vision_bridge` 段）转文字。修掉"截图路径被当 base64"坏图 bug；新增 Agent 自带能力函数 `screen_inspect(question)`（只读、无确认门，SYSTEM_PROMPT 规则 7 指导"不确定/出错先截图看"），GUI 成功/失败都自动补观测图。截图等过程产物单独存会话产物目录 `<artifacts_root>/<会话>`（`AGENT_ARTIFACTS_DIR` > `config.memory.artifacts_dir` > `%TEMP%\miniyu_artifacts`，可被下一技能复用）；用户说「清理截图/清理产物」或 `/reset` 联动清空；本轮产生产物时最终回复附一句提醒。配套单测 `tests/test_agent_vision.py`，测试 322 → **332 全绿**。
 10. **统一视觉源 + 可移植（2026-09-06，与决策 8/9 配套）**：看图/OCR 到底用谁，只由 `llm.supports_vision` 决定——`true`（主对话有视觉，如 qwen3.5-plus）→ 直接调主对话(llm)段读图，**不必配第二个 key**；`false`（主对话纯文本）→ 调 config.yaml 顶层 `vision_bridge` 段（独立第二个视觉 API，可与 llm 不同 key/厂商）。这统一收敛在新增的 `core/vision_bridge.py`（`require_vision` 校验 + `describe_image(image, question)` 自动选源），`make_ocr_verify` 与 `screen_inspect` 文字通道都经它。可移植性：删除 demo 里 `C:\Users\34808\...\qwen-vision` 本机绝对路径依赖，新增 `config.yaml.example` 模板（两种填法：单 key 有视觉主模型 / 双 key + 视觉桥）；外部 node 桥仅作显式 `vision_js`/`AGENT_VISION_JS` 的旧通道保留。两源都没配/失败 → `VisionBridgeError` 给配置指引，绝不瞎编。测试 **332 → 343 全绿**。
 11. **邮件能力 = 自验证技能 send_email（2026-09-06，决策 8 同形态的再落地）**：用户问能否补「微信和写邮件」后评估：微信真号自动化封号风险不可逆、不做；邮件走 SMTP/IMAP 全链路。做成 **1 个白名单组合技能**（不是加底层工具——工具 57 不变、技能 24→25）：新增纯 stdlib 协议层 `core/email_client.py`（`smtp_send` / `imap_verify_sent` / 可选 `imap_verify_arrival`；连接拆 `_connect_smtp/_connect_imap` 内部缝隙、patch 即可单测、不真联网）。skill 内部完成「发 → IMAP 回读发件箱『已发送』 →（配 verify_inbox 时）轮询收件人收件箱『确实到达』」的**自验证闭环**，回读未命中如实报 found=False、不把没验到当成功；email 段没配好（缺 username/auth_code）在『发之前』抛 `MailError` 中文指引（fail-closed）；授权码同 `llm.api_key` 同级敏感，只进 config/env、不入库。配套 `tests/test_email.py` 25 例、全量 **343 → 368 全绿**；`examples/email_demo.py`（直驱技能 / `--agent` 真实 LLM）。**QQ 真机实跑（2026-09-06）**修正三处协议层假设并补 2 条回归：①QQ 投递改写 Message-ID（`<…@miniyu.local>` → `<tencent_…@qq.com>`）②中文主题在存储头里是 RFC2047 编码 → `_folder_search_ids` 改为解码头字段后按主题兜底匹配 ③『已发送』文件夹实为带空格的 `Sent Messages`（非 `&XfJT0ZAB-`），imaplib 不加引号直接 EXAMINE 会 BAD → 按 RFC3501 加引号；另发现 **QQ 授权码 SMTP 不在发件箱留副本** → 发件箱未命中≠没发，双端闭环下以收件箱到达核验为铁证（163/Gmail 等留副本仍可查）。测试 **368 → 370 全绿**（test_email 25→27）；证据 `docs/evidence/email_live_qq.md`。
+12. **授权档位 = 确认门三档可切换（2026-09-06，决策 4 的升级落地）**：用户嫌确认弹窗麻烦，要"像 Claude Code / Trae 授更广权力、只在删除文件时才需确认"。把"high 即确认"升级为纯函数 `should_confirm(level,name,risk)`（`core/safety.py`）：base（默认，现状）全部 HIGH 确认；advanced 只对**永久删除**类（`delete_file`/`delete_directory`/`cleanup_by_type`/`empty_trash`）确认，`run_command`/`kill_process`/`terminate_process`/`app_send_message`/`send_email` 自动放行；full 从不确认（含删除）。`resolve_authz_level(agent_cfg)` 统一解析：`agent.authorization` 优先，旧 `confirm_high_risk=false` ⇔ full（配置不回归）。Agent 运行时确认门（`_execute_tool`/`_execute_skill`）读 `self.authz_level`；引擎级 fail-safe（`call_safely`/`run_skill_safely`/离线 executor）保持按 HIGH 返回 `CONFIRMATION_REQUIRED` 不变——档位只作用于 Agent 交互层。UI：Web 顶栏授权下拉 → `/switch-authz`（`set_config_authorization` 文本级写回 config.yaml + 热改运行中 agent 不丢会话；切 full 先弹一次浏览器 confirm），CLI 加 `/authz [base|advanced|full]`。QQ 发送的屏幕 OCR 门在 advanced/full 下仍生效（**自动放行 ≠ 盲发**）。配套 `tests/test_authz.py` 21 例 → **370 → 391 全绿**（15 个测试文件）。
 
 ---
 

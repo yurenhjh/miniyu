@@ -26,9 +26,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.agent import Agent
-from core.agent_config import load_config
+from core.agent_config import load_config, set_config_authorization
 from core.llm_client import DeterministicBrain
 from core.safety import ConfirmationDenied
+from core.safety import AUTHZ_LEVELS, AUTHZ_LABELS, resolve_authz_level
 
 
 # ============================================================
@@ -88,6 +89,7 @@ def print_help(is_offline: bool):
     print("  /rename <id> <标题>  重命名会话")
     print("  /delete <id>   删除会话")
     print("  /model         查看当前使用的模型")
+    print("  /authz         查看/切换授权档位（base|advanced|full）")
     print("  /tools         列出所有可用工具")
     print("  /config        查看当前配置")
     print("  /help          显示此帮助")
@@ -149,7 +151,8 @@ def main():
     # 显示当前模式
     print(f"  模式: {agent.model_name}")
     print(f"  视觉: {'支持' if agent.llm.supports_vision else '不支持'}")
-    print(f"  高危确认: {'开启' if config.get('agent', {}).get('confirm_high_risk', True) else '关闭'}")
+    _authz_label = AUTHZ_LABELS[resolve_authz_level(config.get("agent", {}))]
+    print(f"  授权档位: {_authz_label}（/authz 查看详情或切换）")
 
     if is_offline:
         print()
@@ -227,6 +230,35 @@ def main():
                 continue
             elif cmd == "/model":
                 print_model_info(agent, config)
+                continue
+            elif cmd.startswith("/authz"):
+                # /authz 查看当前授权档位；/authz <base|advanced|full> 切换（持久化 + 热改运行中 agent）
+                parts = user_input.split(None, 1)
+                if len(parts) == 1:
+                    lv = resolve_authz_level(config.get("agent", {}))
+                    print(f"  当前授权档位: {AUTHZ_LABELS[lv]} ({lv})")
+                    print("    base      = 基础授权：全部高危操作需确认（现状）")
+                    print("    advanced  = 高级授权：仅永久删除文件需确认，其余高危（命令/杀进程/外发）自动放行")
+                    print("    full      = 全自动：从不确认（含文件删除）")
+                    print("  切换用法: /authz base | advanced | full")
+                else:
+                    level = parts[1].strip().lower()
+                    if level not in AUTHZ_LEVELS:
+                        print(f"  ❌ 未知档位: {level}（可选 base / advanced / full）")
+                    else:
+                        try:
+                            set_config_authorization(level)
+                        except Exception as e:
+                            print(f"  ❌ 写回 config.yaml 失败: {e}（可手动编辑 agent.authorization 后重启）")
+                            continue
+                        agent.authz_level = level
+                        config.setdefault("agent", {})["authorization"] = level
+                        tip = {
+                            "advanced": "，仅永久删除文件需确认",
+                            "full": "，不再确认任何操作",
+                            "base": "，全部高危操作需确认",
+                        }[level]
+                        print(f"  ✅ 已切换为「{AUTHZ_LABELS[level]}」授权{tip}（运行中生效，不丢会话）")
                 continue
             elif cmd == "/tools":
                 tools = agent.api.list_tools_mcp()

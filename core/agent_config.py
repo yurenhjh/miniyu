@@ -51,6 +51,7 @@ ENV_MAP = {
     "AGENT_LLM_VISION": ("llm", "supports_vision"),
     "AGENT_MAX_STEPS": ("agent", "max_steps"),
     "AGENT_CONFIRM_HIGH_RISK": ("agent", "confirm_high_risk"),
+    "AGENT_AUTHORIZATION": ("agent", "authorization"),
     "AGENT_HISTORY_WINDOW": ("agent", "history_window"),
     "AGENT_EMAIL_SMTP_HOST": ("email", "smtp_host"),
     "AGENT_EMAIL_SMTP_PORT": ("email", "smtp_port"),
@@ -172,11 +173,12 @@ def load_config() -> dict:
     return cfg
 
 
-def set_config_model(model: str) -> Path:
+def _set_config_field(section: str, key: str, value: str) -> Path:
     """
-    把 llm.model 写回 config.yaml（仅改 model 行，保留注释与其它字段）。
+    文本级把 config.yaml 顶层 <section> 段里的 <key> 行改成 "value"。
 
-    用文本级替换而不是整体 YAML dump，避免丢失文件里的中文注释。
+    用文本级替换而不是整体 YAML dump，避免丢失文件里的中文注释；
+    未找到 <key> 行时在该段首部补一行（两空格缩进）。
     返回被修改的配置文件路径。
     """
     path = _find_config()
@@ -186,35 +188,55 @@ def set_config_model(model: str) -> Path:
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
 
-    # 定位顶层 llm: 段
-    llm_idx = None
+    # 定位顶层 <section>: 段
+    sec_idx = None
     for i, line in enumerate(lines):
-        if re.match(r"^llm\s*:", line):
-            llm_idx = i
+        if re.match(rf"^{re.escape(section)}\s*:", line):
+            sec_idx = i
             break
-    if llm_idx is None:
-        raise ValueError("config.yaml 中没有 llm 段，无法写入 model")
+    if sec_idx is None:
+        raise ValueError(f"config.yaml 中没有 {section} 段，无法写入 {key}")
 
     replaced = False
-    for i in range(llm_idx + 1, len(lines)):
+    for i in range(sec_idx + 1, len(lines)):
         line = lines[i]
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        if not line[:1].isspace():  # 遇到下一个顶层键，离开 llm 段
+        if not line[:1].isspace():  # 遇到下一个顶层键，离开该段
             break
-        m = re.match(r"^(\s*)model\s*:\s*.*?(\r?\n)$", line)
+        m = re.match(rf"^(\s*){re.escape(key)}\s*:\s*.*?(\r?\n)$", line)
         if m:
             indent, newline = m.group(1), m.group(2)
-            lines[i] = f'{indent}model: "{model}"{newline}'
+            lines[i] = f'{indent}{key}: "{value}"{newline}'
             replaced = True
             break
 
     if not replaced:
-        # llm 段里没有 model 行，则在 llm: 后补一行
-        lines.insert(llm_idx + 1, f'  model: "{model}"\n')
+        # 该段里没有 <key> 行，则在段首补一行
+        lines.insert(sec_idx + 1, f'  {key}: "{value}"\n')
 
     path.write_text("".join(lines), encoding="utf-8")
     return path
+
+
+def set_config_model(model: str) -> Path:
+    """
+    把 llm.model 写回 config.yaml（仅改 model 行，保留注释与其它字段）。
+
+    用文本级替换而不是整体 YAML dump，避免丢失文件里的中文注释。
+    返回被修改的配置文件路径。
+    """
+    return _set_config_field("llm", "model", model)
+
+
+def set_config_authorization(level: str) -> Path:
+    """
+    把 agent.authorization 写回 config.yaml（三档授权档位：base/advanced/full）。
+
+    文本级替换保留中文注释与其它字段；运行中的 agent 由调用方另行热更新。
+    返回被修改的配置文件路径。
+    """
+    return _set_config_field("agent", "authorization", level)
 
 
 def get_api_key() -> str:

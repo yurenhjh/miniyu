@@ -32,9 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from flask import Flask, request, jsonify
 
 from core.agent import Agent
-from core.agent_config import load_config, set_config_model
+from core.agent_config import load_config, set_config_model, set_config_authorization
 from core.llm_client import list_available_models, probe_model, FALLBACK_CANDIDATES
 from core.safety import ConfirmationDenied
+from core.safety import AUTHZ_LEVELS, AUTHZ_LABELS, resolve_authz_level
 
 app = Flask(__name__)
 
@@ -292,7 +293,7 @@ HTML = r"""<!DOCTYPE html>
 	    font-size: 11px;
 	    background: var(--card);
 	  }
-  .model-select {
+  .model-select, .authz-select {
     background: var(--card);
     color: var(--text);
     border: 1px solid var(--border);
@@ -303,7 +304,8 @@ HTML = r"""<!DOCTYPE html>
     outline: none;
     cursor: pointer;
   }
-  .model-select:disabled { opacity: 0.6; cursor: not-allowed; }
+  .model-select:disabled, .authz-select:disabled { opacity: 0.6; cursor: not-allowed; }
+  .authz-select { max-width: 118px; }
   #toast {
     position: fixed;
     top: 18px;
@@ -487,6 +489,11 @@ HTML = r"""<!DOCTYPE html>
 	    <span class="badge" id="provider-badge">离线模式</span>
 	    <select id="model-select" class="model-select" onchange="onModelChange()" title="切换模型（切换后自动测试连通性）">
 	      <option value="">模型加载中…</option>
+	    </select>
+	    <select id="authz-select" class="authz-select" onchange="onAuthzChange()" title="授权档位：基础=全部高危需确认(现状)；高级=仅永久删除文件需确认；全自动=从不确认(含删除)">
+	      <option value="base">基础授权</option>
+	      <option value="advanced">高级授权</option>
+	      <option value="full">全自动</option>
 	    </select>
 	    <button onclick="resetChat()" style="background:none;border:1px solid var(--border);color:var(--text-secondary);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;">重置</button>
 	  </div>
@@ -746,6 +753,7 @@ async function updateStatus() {
   document.getElementById('provider-badge').textContent =
     offline ? '🧠 离线模式' : '☁️ 在线模式';
   setModelControl(data.model, !offline);
+  if (data.authz !== undefined) setAuthzControl(data.authz);
   if (data.session_count !== undefined) {
     document.getElementById('session-badge').textContent = '会话: ' + data.session_count;
   }
@@ -784,6 +792,46 @@ function setModelControl(name, online) {
     sel.appendChild(o);
   }
   sel.value = name;
+}
+
+// 授权档位下拉：当前值来自 /status 的 authz 字段；切「全自动」先弹一次浏览器确认把关
+let lastAuthz = 'base';
+
+function setAuthzControl(level) {
+  const sel = document.getElementById('authz-select');
+  if (!sel) return;
+  const v = (['base', 'advanced', 'full'].indexOf(level) >= 0) ? level : 'base';
+  lastAuthz = v;
+  sel.value = v;
+}
+
+async function onAuthzChange() {
+  const sel = document.getElementById('authz-select');
+  const level = sel.value;
+  if (!level) return;
+  if (level === 'full') {
+    const ok = window.confirm('切到「全自动」后，miniyu 将不再确认任何操作（含文件删除）。确定切换？');
+    if (!ok) {
+      setAuthzControl(lastAuthz);
+      return;
+    }
+  }
+  sel.disabled = true;
+  try {
+    const r = await fetch('/switch-authz', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level: level }),
+    });
+    const d = await r.json();
+    showToast(d.message, !!d.ok);
+    await updateStatus();
+  } catch (e) {
+    showToast('切换授权出错：' + e.message, false);
+    await updateStatus();
+  } finally {
+    sel.disabled = false;
+  }
 }
 
 async function loadModels() {
@@ -849,6 +897,7 @@ async function onModelChange() {
 	  document.getElementById('provider-badge').textContent =
 	    data.provider === 'deterministic' ? '🧠 离线模式' : '☁️ 在线模式';
 	  setModelControl(data.model, data.provider !== 'deterministic');
+	    setAuthzControl(data.authz);
 	  if (data.provider === 'deterministic') {
 	    addMessage('你好，我是 miniyu，你的桌面 AI 助手。', 'bot');
 	    addMessage('当前为离线模式，可以执行整理桌面、磁盘空间、查看进程等预设指令。', 'system');
@@ -888,6 +937,7 @@ def status():
                 "provider": llm.get("provider", "deterministic"),
                 "model": llm.get("model") or "未配置模型",
                 "vision": bool(llm.get("supports_vision", False)),
+                "authz": resolve_authz_level(cfg.get("agent", {})),
                 "tools": 0,
                 "session_id": None,
                 "session_title": "新对话",
@@ -899,6 +949,7 @@ def status():
             "provider": "deterministic",
             "model": "离线脑（规则匹配）",
             "vision": False,
+            "authz": resolve_authz_level(cfg.get("agent", {})),
             "tools": 0,
             "session_id": None,
             "session_title": "新对话",
@@ -909,6 +960,7 @@ def status():
         "provider": _agent.provider,
         "model": _agent.model_name,
         "vision": _agent.llm.supports_vision,
+        "authz": _agent.authz_level,
         "tools": len(_agent.api.list_tools_mcp()),
         "session_id": _agent.current_session_id,
         "session_title": current.title if current else "新对话",
@@ -999,6 +1051,60 @@ def switch_model():
         "ok": True,
         "model": model,
         "message": f"✅ 切换成功：模型 {model} 已连通，可正常使用。",
+    })
+
+
+@app.route("/switch-authz", methods=["POST"])
+def switch_authz():
+    """切换授权档位（base/advanced/full）：持久化 config.yaml + 热改运行中 agent。
+
+    档位只影响"哪些高危操作要弹确认"，与模型连通性无关，离线/在线都能切。
+    """
+    global _agent
+    data = request.get_json(silent=True) or {}
+    level = (data.get("level") or "").strip()
+    if level not in AUTHZ_LEVELS:
+        return jsonify({
+            "ok": False,
+            "message": f"未知授权档位：{level or '(空)'}（可选 base / advanced / full）。",
+        })
+
+    cfg = load_config()
+    current = (
+        _agent.authz_level if _agent is not None
+        else resolve_authz_level(cfg.get("agent", {}))
+    )
+    if level == current:
+        return jsonify({
+            "ok": True,
+            "level": level,
+            "message": f"当前已在「{AUTHZ_LABELS[level]}」，无需重复切换。",
+        })
+
+    # 1) 持久化到 config.yaml（文本级替换 agent.authorization 行，保留中文注释）
+    try:
+        set_config_authorization(level)
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "level": current,
+            "message": f"授权档位写回 config.yaml 失败：{e}。\n请手动编辑 config.yaml 的 agent.authorization 后重启。",
+        })
+
+    # 2) 热切换运行中的 agent（不重建，当前会话与上下文不丢）
+    if _agent is not None:
+        _agent.authz_level = level
+        _agent.config.setdefault("agent", {})["authorization"] = level
+
+    tip = {
+        "advanced": "（高级授权：仅永久删除文件需确认）",
+        "full": "（全自动：不再确认任何操作）",
+        "base": "（基础授权：全部高危操作需确认）",
+    }[level]
+    return jsonify({
+        "ok": True,
+        "level": level,
+        "message": f"✅ 已切换为「{AUTHZ_LABELS[level]}」授权{tip}",
     })
 
 

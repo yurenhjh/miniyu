@@ -35,6 +35,58 @@ def requires_confirmation(risk):
     return risk == HIGH
 
 
+# 授权档位（agent.authorization）：决定哪些高危操作在执行前要征求用户许可
+AUTHZ_BASE = "base"            # 基础授权：所有 HIGH 都确认（现状默认）
+AUTHZ_ADVANCED = "advanced"    # 高级授权：只对"永久删除文件"类确认，其余 HIGH 自动放行
+AUTHZ_FULL = "full"            # 全自动：从不确认（含删除）
+AUTHZ_LEVELS = (AUTHZ_BASE, AUTHZ_ADVANCED, AUTHZ_FULL)
+AUTHZ_LABELS = {
+    AUTHZ_BASE: "基础授权",
+    AUTHZ_ADVANCED: "高级授权",
+    AUTHZ_FULL: "全自动",
+}
+
+# 高级档下仍要确认的"永久删除类"：单文件/目录删除 + 按扩展名批量删 + 清空回收站
+# （与上面 TOOL_META / SKILL_META 的 HIGH 定义一一对应，勿漏改）
+_PERMANENT_DELETE = {
+    "delete_file",
+    "delete_directory",
+    "cleanup_by_type",
+    "empty_trash",
+}
+
+
+def should_confirm(level, name, risk):
+    """按授权档位决定某工具/技能执行前是否要征求许可（Agent 运行时确认门的判断源）
+
+    level: AUTHZ_BASE / AUTHZ_ADVANCED / AUTHZ_FULL（未知值按 base 处理，维持现状）
+    name:  工具/技能名（advanced 档下区分"永久删除"与其余 HIGH）
+    risk:  READ_ONLY / LOW / MEDIUM / HIGH
+    """
+    if risk != HIGH:
+        return False
+    if level == AUTHZ_FULL:
+        return False
+    if level == AUTHZ_ADVANCED:
+        return name in _PERMANENT_DELETE
+    return True
+
+
+def resolve_authz_level(agent_cfg) -> str:
+    """从 agent 配置段解析当前授权档位。
+
+    agent.authorization 字段优先（base/advanced/full）；
+    未显式配置时兼容旧字段：confirm_high_risk=False 等价"全自动"；默认（True/缺省）= 基础授权。
+    """
+    cfg = agent_cfg or {}
+    authz = cfg.get("authorization")
+    if authz in AUTHZ_LEVELS:
+        return authz
+    if cfg.get("confirm_high_risk", True) is False:
+        return AUTHZ_FULL
+    return AUTHZ_BASE
+
+
 # 工具风险分级表：name -> (risk, category, description)
 TOOL_META = {
     # 文件操作

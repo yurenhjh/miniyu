@@ -198,7 +198,7 @@ miniyu 是第4组独立实现的 AI 桌面助手，通过 LLM 驱动的 Agent �
 | 界面 | 文件 | 说明 |
 |------|------|------|
 | **终端界面（CLI）** | `examples/agent_cli.py` | 零依赖，任何机器都能跑，miniyu 品牌提示符 |
-| **Web 桌面客户端** | `examples/miniyu_web.py` | Flask + 深色主题，高危操作弹模态框确认 |
+| **Web 桌面客户端** | `examples/miniyu_web.py` | Flask + 深色主题，高危操作弹模态框确认；顶栏可切换授权档位（基础 / 高级 / 全自动） |
 
 ### 架构
 
@@ -299,7 +299,7 @@ group4_tools_os_skills/
 │   ├── mock_tools.py              # Mock版工具注册表（57个工具）
 │   └── mock_skills.py             # Mock版技能库（25个技能）
 │
-├── tests/                         # 单元测试（共 370 个，全部通过）
+├── tests/                         # 单元测试（共 391 个，全部通过）
 │   ├── __init__.py
 │   ├── test_tool_registry.py      # ToolRegistry测试（92个：全部工具+新工具+异常+别名+错误码）
 │   ├── test_skills.py             # SkillLibrary测试（43个：基础+扩展+搜索+Agent）
@@ -314,6 +314,7 @@ group4_tools_os_skills/
 	│   ├── test_model_switch.py       # Web模型切换测试（12个）
 	│   ├── test_agent_skills.py      # Agent可调组合技能：技能→模型函数 / 技能分发 / OCR门（15个）
 	│   ├── test_agent_vision.py      # Agent截图理解(视觉双通道)/统一视觉源/过程产物生命周期测试（19个）
+	│   ├── test_authz.py              # 授权档位（base/advanced/full）确认门测试（21个）
 
 │
 ├── examples/                      # 真机可复跑示例 + 用户界面
@@ -754,7 +755,7 @@ registry.call("browser_close", {})
 # 10. 运行测试
 
 ```bash
-# 运行所有测试（共 370 个）
+# 运行所有测试（共 391 个）
 python -m pytest tests/ -v
 
 # 运行单个测试文件
@@ -802,6 +803,7 @@ python -m pytest tests/test_email.py -v
 - **2026-09-06 Agent 可调组合技能接线**：把 SkillLibrary 的组合技能（QQ 搜索+发送 `app_send_message`）以 OpenAI function 暴露给真实 LLM，Agent 走 `_execute_skill` 分发并默认强制「屏幕 OCR 核对目标会话」门 + HIGH 确认门——模型不再退化成激活窗口/输字的零散原语，避免发错会话
 - **2026-09-06 Agent 截图理解 + 过程产物生命周期**：`qwen3.5-plus` 原生多模态（真机探测通过），开启 `supports_vision`；修掉"截图文件路径被当 base64"的坏图 bug，截图以真 base64 独立观测消息回传；新增 Agent 可调能力函数 **screen_inspect**（视觉模型直接看图 / 无视觉模型走项目内视觉桥 `core.vision_bridge`，读 config.yaml 的 `vision_bridge` 段——独立第二个视觉 API；不再依赖本机 ~/.claude 的外部 node 脚本，别人填 key 即用），GUI 成功/失败都自动补图；截图等过程产物单独存会话产物目录（可被下一技能复用），支持「清理截图/清理产物」与 `/reset` 联动清空，规范见 ADR 0009
 - **2026-09-06 视觉桥可移植化（项目内 vision_bridge + config.yaml.example）**：看屏幕/OCR 的默认视觉桥迁进项目内 `core/vision_bridge.py`——`llm.supports_vision` 决定用谁看图/OCR：主对话有视觉(true)直接用主模型读图（不必第二个 key）；主对话纯文本(false)走 config.yaml 顶层**独立 `vision_bridge` 段**（可与主对话不同 key/厂商，即"填两个 API"）。删掉 demo/文档里本机绝对路径（`C:\Users\34808\...\qwen-vision`），新增 `config.yaml.example` 模板（两种填法：单 key 有视觉主模型 / 双 key + 视觉桥）。外部 node 桥仅作显式 `vision_js`/`AGENT_VISION_JS` 的旧通道保留。全量测试 332→**343 全绿**
+- **2026-09-06 授权档位（基础 / 高级 / 全自动）**：把「高危操作确认门」从二值开关升级成三档可切换授权 `agent.authorization`——base=基础授权(全部高危需确认，现状)；advanced=高级授权(仅永久删除文件需确认，run_command·kill_process·QQ 发消息·发邮件自动放行)；full=全自动(从不确认，含删除)。`core/safety.py` 新增纯函数 `should_confirm(level,name,risk)` 与 `resolve_authz_level`（旧 `confirm_high_risk=false` ⇔ full，配置不回归）；Agent 运行时确认门（`_execute_tool`/`_execute_skill`）改读档位；Web 顶栏新增授权档位下拉（`/switch-authz` 持久化 config.yaml + 热改运行中 agent 不丢会话，切「全自动」先弹一次浏览器确认把关），CLI 加 `/authz` 命令；引擎级 fail-safe（call_safely/run_skill_safely）保持按 HIGH 不变，QQ 发送的屏幕 OCR 核对门在高级/全自动下仍生效（自动放行≠盲发）。新增 `tests/test_authz.py` 21 例 → **370→391 全绿**（15 个测试文件）
 - **2026-09-06 邮件全链路（自验证技能 send_email）**：新增 `core/email_client.py`（纯 stdlib：`smtplib`/`imaplib`/`email`，零新增依赖）+ Agent 白名单组合技能 **send_email**——SMTP 发信后自动 IMAP 回读发件箱『已发送』核验已落库；config.yaml 的 email 段配 `verify_inbox`（收件侧邮箱 IMAP）再轮询收件人收件箱核验『确实到达』（双端闭环），回读未命中如实报 found=False。授权码与 `llm.api_key` 同级敏感：只进 config/env、不入库（config.yaml.email 段入库留空、本地填回后不要再 commit）。**工具 57 不变、技能 24→25**；send_email 走 HIGH 确认门（对外发送、不可撤回）。新增 `examples/email_demo.py`（直驱技能 / `--agent` 真实 LLM 双模式 + 收尾独立 IMAP 核验）。单测全绿 343→**368**（新增 `tests/test_email.py` 25 例：fail-closed、协议层、技能编排、Agent 分发、Mock 对等）。**QQ 真机实跑**（2026-09-06）：主号发小号 `你好呀，小余人`，SMTP 接受、**到达核验命中（收件箱真收到）**；实跑暴露并修复 3 个协议层坑——QQ 投递改写 Message-ID、中文主题存 RFC2047 编码（→ 头解码后按主题兜底匹配）、发件箱名 `Sent Messages` 带空格需按 RFC3501 加引号；另发现 **QQ 授权码 SMTP 不在发件箱留副本** → 发件箱未命中≠没发，双端闭环下以收件箱到达核验为铁证。单测 **368→370**（test_email 25→27，+SELECT 引号、+RFC2047 主题命中 2 条回归）。证据 `docs/evidence/email_live_qq.md`
 
 ## 第4周计划
@@ -817,7 +819,7 @@ python -m pytest tests/test_email.py -v
 - **跨平台** — 兼容 Windows / Linux / macOS，使用 `pathlib` 统一路径处理，内置编码安全打印
 - **模块化** — 工具、技能、接口相互独立，新增工具只需注册无需改调用逻辑
 - **可扩展** — 支持动态注册/注销工具和技能
-- **可测试** — 370个单元测试覆盖核心功能，支持Mock测试和接口联调测试
+- **可测试** — 391个单元测试覆盖核心功能，支持Mock测试和接口联调测试
 - **可统计** — 内置调用次数、成功率、Top5排名等统计功能
 
 # 14. 跨平台兼容说明
@@ -826,7 +828,7 @@ python -m pytest tests/test_email.py -v
 
 | 系统 | 状态 | 说明 |
 |------|------|------|
-| Windows 11 | ✅ 通过 | 370个测试全部通过，Demo正常运行 |
+| Windows 11 | ✅ 通过 | 391个测试全部通过，Demo正常运行 |
 | Ubuntu/Linux | ✅ 兼容 | 使用 `pathlib` / `shutil` 等跨平台库，无需修改 |
 | macOS | ✅ 预期兼容 | 内部测试未进行，理论兼容 |
 
