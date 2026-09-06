@@ -236,12 +236,12 @@ class MockSkillLibrary:
                 },
             },
             "browser_search": {
-                "desc": "[MOCK] browser_search：浏览器联网搜索并返回结果摘要（bing/baidu）",
+                "desc": "[MOCK] browser_search：HTTP 联网搜索（bing）并返回结果摘要",
                 "params": {
                     "type": "object",
                     "properties": {
                         "query": {"type": "string"},
-                        "engine": {"type": "string", "enum": ["bing", "baidu"], "default": "bing"},
+                        "engine": {"type": "string", "enum": ["bing"], "default": "bing"},
                     },
                     "required": ["query"],
                 },

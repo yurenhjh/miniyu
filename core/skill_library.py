@@ -138,12 +138,11 @@ _AGENT_SKILL_SCHEMAS = {
     },
     "browser_search": {
         "description": (
-            "联网搜索：在浏览器搜索引擎（bing/baidu）里检索关键词，读取结果页文字摘要并返回"
-            "（只读，不改动任何东西）。适合回答需要『最新信息 / 外部资料 / 我不确定』的问题，"
-            "也是你唯一的联网获取信息的入口之一。动作：启动浏览器 → 打开引擎页 → 输入关键词 → "
-            "回车 → 读取结果文本（text_snippet）。想细读某一条结果时，把返回里的网址交给 "
-            "browser_extract 打开取正文。结果来自互联网，注意时效与来源可信度，引用时应说明出处，"
-            "不要编造没搜到的内容。"
+            "联网搜索：把关键词直接请求搜索引擎（HTTP 直连，不开浏览器），返回前几条结果的"
+            "{标题/链接/摘要}（只读，不改动任何东西）。适合回答需要『最新信息 / 外部资料 / "
+            "我不确定』的问题，是你获取外部信息的主要入口。动作：发起 HTTP 搜索 → 拿到结果列表"
+            "（results 与 text_snippet）。想细读某一条结果时，把返回里的网址交给 browser_extract "
+            "打开取正文。结果来自互联网，注意时效与来源可信度，引用时应说明出处，不要编造没搜到的内容。"
         ),
         "parameters": {
             "type": "object",
@@ -154,8 +153,8 @@ _AGENT_SKILL_SCHEMAS = {
                 },
                 "engine": {
                     "type": "string",
-                    "description": "搜索引擎：bing / baidu（默认 bing）",
-                    "enum": ["bing", "baidu"],
+                    "description": "搜索引擎：仅支持 bing（默认 bing）。百度对自动化有验证码墙，未接入",
+                    "enum": ["bing"],
                     "default": "bing",
                 },
             },
@@ -1625,57 +1624,39 @@ class SkillLibrary:
     # 新增技能：浏览器结构化操作（组合型 Agent Skill）
     # =====================================================
 
-    def browser_search(self, query, engine="bing"):
+    def browser_search(self, query, engine="bing", top=6):
         """
-        结构化网络搜索：打开搜索引擎 → 快照定位输入框 → 输入 → 回车 → 读取结果
+        联网搜索（HTTP 直连，不开浏览器）：把关键词发到必应取结果页，解析出前几条
+        {标题, 链接, 摘要} 返回。
 
         参数：
-            query:  搜索关键词
-            engine: 搜索引擎，可选 bing / baidu，默认 bing
+            query:  搜索关键词（自然语言/多个词均可）
+            engine: 搜索引擎，当前仅支持 bing（百度对自动化有"安全验证"人机墙）
+            top:    最多返回几条结果，默认 6
 
         返回：
-            {"query", "engine", "url", "text_snippet"}
+            {"query", "engine", "url", "results":[{title,url,snippet}], "text_snippet"}
 
         说明：
-            输入框定位不依赖硬编码选择器，而是 browser_snapshot 返回的元素索引
-            （按 tag/role 找一个文本框），规避选择器易碎、引擎改版问题。
+            不走无头浏览器"打字+回车"——CDP 合成回车不触发提交，曾导致搜索超时堆到数分钟；
+            改为像云端联网搜索那样 HTTP 直接请求结果页再解析，快且稳定（实现见 core/web_search.py）。
+            想细读某条结果时交给 browser_extract 打开取正文。
         """
-        urls = {"bing": "https://www.bing.com/", "baidu": "https://www.baidu.com/"}
-        if engine not in urls:
-            raise ValueError(f"暂不支持搜索引擎: {engine}（可选 {list(urls)}）")
+        from core import web_search
 
-        b = self.browser
-        if not b.connected:
-            b.launch()
-
-        b.navigate(urls[engine])
-        b.wait_for(selector="input, textarea", timeout=10)
-        items = b.snapshot()
-        input_index = self._first_input_index(items)
-        if input_index is None:
-            raise LookupError("未在页面中找到搜索输入框")
-
-        b.type_text(query, index=input_index)
-        b.press_enter()
-        b.wait_for(text=query, timeout=10)
-        text = b.read_text()
-
+        if engine != "bing":
+            raise ValueError(f"暂不支持搜索引擎: {engine}（百度有自动验证墙，仅支持 bing）")
+        try:
+            res = web_search.search(query, engine=engine, top=top)
+        except web_search.WebSearchError as e:
+            raise RuntimeError(f"联网搜索失败: {e}") from e
         return {
             "query": query,
-            "engine": engine,
-            "url": urls[engine],
-            "text_snippet": text[:500],
+            "engine": "bing",
+            "url": res["url"],
+            "results": res["results"],
+            "text_snippet": res["text_snippet"],
         }
-
-    @staticmethod
-    def _first_input_index(items):
-        """从快照清单里挑第一个可输入的文本框索引"""
-        for it in items:
-            itype = (it.get("type") or "").lower()
-            if it.get("tag") in ("input", "textarea") and \
-                    itype not in ("hidden", "submit", "button", "checkbox", "radio"):
-                return it["index"]
-        return None
 
     def browser_extract(self, url, selector=None):
         """

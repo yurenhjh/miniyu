@@ -299,7 +299,7 @@ group4_tools_os_skills/
 │   ├── mock_tools.py              # Mock版工具注册表（57个工具）
 │   └── mock_skills.py             # Mock版技能库（26个技能）
 │
-├── tests/                         # 单元测试（共 404 个，全部通过）
+├── tests/                         # 单元测试（共 415 个，全部通过）
 │   ├── __init__.py
 │   ├── test_tool_registry.py      # ToolRegistry测试（92个：全部工具+新工具+异常+别名+错误码）
 │   ├── test_skills.py             # SkillLibrary测试（43个：基础+扩展+搜索+Agent）
@@ -317,6 +317,7 @@ group4_tools_os_skills/
 	│   ├── test_authz.py              # 授权档位（base/advanced/full）确认门测试（21个）
 │   ├── test_email.py              # 邮件全链路：SMTP 发信/IMAP 回读核验 + Agent 分发（27个）
 │   ├── test_agent_read_web.py     # QQ『先读后回』read_qq_chat + 联网 browser_* 白名单（11个）
+│   ├── test_web_http.py           # HTTP 联网搜索 core/web_search 离网单测：解析清洗/相对链接过滤/摘要截断/异常/瞬断重试（11个）
 
 │
 ├── examples/                      # 真机可复跑示例 + 用户界面
@@ -455,7 +456,7 @@ group4_tools_os_skills/
 | app_send_message | 在应用内搜索并发送消息 | 组合窗口/键鼠/输入，端到端完成 |
 | read_qq_chat | 读取 QQ 会话最近聊天（只读） | 搜索进入目标会话→OCR 核对会话标题→截图转写聊天区返回文本 |
 | send_email | 发送邮件并自动回读核验 | SMTP 发信 + IMAP 回读发件箱『已发送』（可核验收件人收件箱『确实到达』），对外不可撤回、HIGH 确认门 |
-| browser_search | 结构化网络搜索 | 打开引擎→定位→输入→回车→读结果 |
+| browser_search | HTTP 联网搜索 | 直接请求必应结果页→解析前几条{标题/链接/摘要}（不开浏览器） |
 | browser_extract | 打开网页并提取内容 | 结构化读取正文/指定元素 |
 
 ---
@@ -758,7 +759,7 @@ registry.call("browser_close", {})
 # 10. 运行测试
 
 ```bash
-# 运行所有测试（共 404 个）
+# 运行所有测试（共 415 个）
 python -m pytest tests/ -v
 
 # 运行单个测试文件
@@ -812,6 +813,7 @@ python -m pytest tests/test_agent_read_web.py -v
 - **2026-09-06 邮件全链路（自验证技能 send_email）**：新增 `core/email_client.py`（纯 stdlib：`smtplib`/`imaplib`/`email`，零新增依赖）+ Agent 白名单组合技能 **send_email**——SMTP 发信后自动 IMAP 回读发件箱『已发送』核验已落库；config.yaml 的 email 段配 `verify_inbox`（收件侧邮箱 IMAP）再轮询收件人收件箱核验『确实到达』（双端闭环），回读未命中如实报 found=False。授权码与 `llm.api_key` 同级敏感：只进 config/env、不入库（config.yaml.email 段入库留空、本地填回后不要再 commit）。**工具 57 不变、技能 24→25**；send_email 走 HIGH 确认门（对外发送、不可撤回）。新增 `examples/email_demo.py`（直驱技能 / `--agent` 真实 LLM 双模式 + 收尾独立 IMAP 核验）。单测全绿 343→**368**（新增 `tests/test_email.py` 25 例：fail-closed、协议层、技能编排、Agent 分发、Mock 对等）。**QQ 真机实跑**（2026-09-06）：主号发小号 `你好呀，小余人`，SMTP 接受、**到达核验命中（收件箱真收到）**；实跑暴露并修复 3 个协议层坑——QQ 投递改写 Message-ID、中文主题存 RFC2047 编码（→ 头解码后按主题兜底匹配）、发件箱名 `Sent Messages` 带空格需按 RFC3501 加引号；另发现 **QQ 授权码 SMTP 不在发件箱留副本** → 发件箱未命中≠没发，双端闭环下以收件箱到达核验为铁证。单测 **368→370**（test_email 25→27，+SELECT 引号、+RFC2047 主题命中 2 条回归）。证据 `docs/evidence/email_live_qq.md`
 
 - **2026-09-06 QQ『先读后回』只读技能 + 联网白名单（给模型"能读、能查"的上下文）**：针对真机反馈"让它找 QQ 群、看聊天回话，它说 send 技能只能发不能读"——根因是**模型能"想"的范围只有上下文里出现的函数**，能力没暴露＝对它不存在。修复：① 新只读技能 **read_qq_chat**（搜索进入目标会话→OCR 核对会话标题（`make_ocr_verify`，读错群会失败关闭）→截图裁聊天区→视觉桥转写最近聊天返回文本，只读不外发）；② Agent 白名单由 2 扩到 **5**（app_send_message / **read_qq_chat** / send_email / **browser_search** / **browser_extract**），SYSTEM_PROMPT 新守则：QQ 找群看聊天＝先 `read_qq_chat` 再 `app_send_message`，联网查资料＝`browser_search`→`browser_extract` 并标注来源、不得编造；③ 技能 25→**26**（`core/vision_bridge` 缺视觉源时明确报错引导，不假装读到）。全量 **391→404 全绿**（16 个测试文件：新增 `tests/test_agent_read_web.py` 11 例 + `test_agent_skills` +2，mock 技能库/白名单对等）
+- **2026-09-06 联网搜索改 HTTP 直连（修真机"思考 3 分钟仍超时"）**：真机让 miniyu 搜 CSGO 赛果 → 反复"搜索超时"约 3 分钟。定位根因＝旧 `browser_search` 走无头浏览器"打字+合成回车"，但 **CDP 合成回车在必应/百度都不触发提交**（实测词已打进框、URL 停在首页），内部 wait_for 每次必 10s 超时、模型重试数次堆到分钟级；百度另有"安全验证"人机墙。修复＝新增 `core/web_search.py`（纯标准库、零依赖）**HTTP 直接请求必应结果页再解析 `b_algo` → {标题/链接/摘要}**，与云端联网搜索同构；基址**直连 `cn.bing.com`**（`www` 会 302 跳 cn、CN 网络下二次握手偶发被重置 WinError 10054）+ **3 次连接级重试**兜底，实测 **~0.6s** 返回 5 条结果。schema/engine 收敛为仅 `bing`（百度验证墙未接入），FAQ/技能表同步。全量 **404→415 全绿**（17 个测试文件：新增 `tests/test_web_http.py` 11 例，离网不联网）
 
 ## 第4周计划
 - 工具签名验证（可选）
@@ -826,7 +828,7 @@ python -m pytest tests/test_agent_read_web.py -v
 - **跨平台** — 兼容 Windows / Linux / macOS，使用 `pathlib` 统一路径处理，内置编码安全打印
 - **模块化** — 工具、技能、接口相互独立，新增工具只需注册无需改调用逻辑
 - **可扩展** — 支持动态注册/注销工具和技能
-- **可测试** — 404个单元测试覆盖核心功能，支持Mock测试和接口联调测试
+- **可测试** — 415个单元测试覆盖核心功能，支持Mock测试和接口联调测试
 - **可统计** — 内置调用次数、成功率、Top5排名等统计功能
 
 # 14. 跨平台兼容说明
@@ -835,7 +837,7 @@ python -m pytest tests/test_agent_read_web.py -v
 
 | 系统 | 状态 | 说明 |
 |------|------|------|
-| Windows 11 | ✅ 通过 | 404个测试全部通过，Demo正常运行 |
+| Windows 11 | ✅ 通过 | 415个测试全部通过，Demo正常运行 |
 | Ubuntu/Linux | ✅ 兼容 | 使用 `pathlib` / `shutil` 等跨平台库，无需修改 |
 | macOS | ✅ 预期兼容 | 内部测试未进行，理论兼容 |
 
