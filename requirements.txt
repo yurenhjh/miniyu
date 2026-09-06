@@ -1,0 +1,9 @@
+# 第4组 - 工具注册 + OS Skills 依赖
+# 主体为标准库（shutil/subprocess/pathlib/platform/tempfile/unittest/hashlib/zipfile/mimetypes）
+# 以下为可选第三方库；一键安装：pip install -r requirements.txt
+
+Pillow==11.*          # 图片元数据 / 旋转等图片工具
+websocket-client==1.* # 浏览器结构化控制（CDP WebSocket 通信）
+psutil==7.*           # 系统管理工具（进程 / 网络）
+requests==2.*         # LLM 客户端（OpenAICompatibleClient 的 HTTP 调用）
+pyyaml==6.*           # YAML 配置解析（缺省时自动降级为简易解析）

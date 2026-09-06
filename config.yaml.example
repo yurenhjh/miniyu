@@ -1,0 +1,64 @@
+# ============================================================
+# 第4组 miniyu 配置 —— 模板（给别人/换机器时复制成 config.yaml 再填）
+# 优先级：环境变量 > 此文件 > 内置默认值
+# ============================================================
+# 使用方法：
+#   1) 复制本文件为 config.yaml：  cp config.yaml.example config.yaml
+#   2) "看图/OCR 用谁"由 llm.supports_vision 决定，两种填法都能跑全功能：
+#        填法一（最省事，一个 key）：llm 直接填【有视觉】的模型，supports_vision: true
+#            → 截图/OCR 由主对话模型自己读，不必配 vision_bridge；
+#        填法二（两把 key，主对话可省成本用纯文本模型）：llm.supports_vision 设 false，
+#            另给下方 vision_bridge 填一个有视觉的 key → 截图/OCR 走 vision_bridge。
+#   下方模板默认按【填法一】：llm 填 qwen3.5-plus(有视觉)+supports_vision: true，
+#   vision_bridge 段是为想切【填法二】的人留的——把 supports_vision 改 false 并给它
+#   填上有视觉的 key 即可。
+
+llm:
+  # provider: deterministic（离线脑，零依赖，不填 key 也能演示）/
+  #          openai_compatible（任意 OpenAI 兼容 API：百炼/DeepSeek/豆包/Ollama…）
+  provider: openai_compatible
+
+  # 常见 base_url：
+  #   阿里云百炼:  https://dashscope.aliyuncs.com/compatible-mode/v1
+  #   OpenAI:      https://api.openai.com/v1
+  #   DeepSeek:    https://api.deepseek.com      （不写 /v1 会自动补）
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: ""            # ← 填入你的主对话 API key
+  model: "qwen3.5-plus"  # 主对话模型（纯文本也行，如 DeepSeek / qwen-plus…）
+
+  # 主模型是否支持看图（看图/OCR 用谁只看这里）：
+  #   true  → 截图理解与 QQ 发送前 OCR 核对门都直接用主对话模型看图（填法一，无需 bridge）；
+  #   false → 主模型是纯文本，截图/OCR 走下方 vision_bridge 段的独立视觉 API（填法二）
+  supports_vision: true
+
+  timeout: 60
+  max_total_tokens: 0
+
+# ============================================================
+# 视觉桥（vision_bridge）—— 主对话(llm)为纯文本时，看图/OCR 用的独立 API
+# ============================================================
+# 只在 llm.supports_vision=false（填法二）时生效：
+#   - QQ 发送前的屏幕 OCR 核对门
+#   - screen_inspect 截图理解
+# model 必须填【真正能读图】的视觉模型（如 qwen3.5-plus / qwen-vl-max）。
+# 可以与上方 llm 用不同 key / 不同厂商（"填两个 API"就是为省钱：主对话纯文本便宜，
+# 视觉桥再单独一个便宜视觉模型）。
+vision_bridge:
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: ""            # ← 填入你的视觉 API key（有视觉模型那把）
+  model: "qwen3.5-plus"  # ← 换成有视觉的模型，如 qwen3.5-plus / qwen-vl-max 等
+  timeout: 60
+
+agent:
+  max_steps: 15
+  confirm_high_risk: true
+  history_window: 20
+  enable_planning: false
+
+memory:
+  storage_dir: "conversations"
+  auto_summarize: false
+  window_size: 20
+  summarize_threshold: 0.8
+  # 可选：截图等过程产物目录（不写则用系统临时目录 %TEMP%\miniyu_artifacts）
+  # artifacts_dir: ""

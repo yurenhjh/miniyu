@@ -1,0 +1,31 @@
+# ---- 本机 / 工具杂物（不属于项目，勿提交） ----
+.reasonix/
+.claude_backup_0509/
+.claude/
+.claude_backup_0509_*
+.pytest_cache/
+test_output.txt
+.pdf_extracted.txt
+*.log
+
+# ---- 运行时数据 / 用户会话 ----
+# config.yaml 是唯一可能含 API key 的文件：入库前务必把 api_key 留空，
+# 之后在本地填回时不要再 commit 它。本行不忽略 config.yaml（模板需随仓库走）。
+conversations/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+htmlcov/
+.coverage
+
+# ---- OS / 编辑器 ----
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
