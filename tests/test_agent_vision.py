@@ -262,20 +262,23 @@ class TestScreenInspect(unittest.TestCase):
 
 
 class TestAgentVisionToolset(unittest.TestCase):
-    """模型可见函数全集 = 57 工具 + 2 白名单技能 + screen_inspect（共 60）"""
+    """模型可见函数全集 = 57 工具 + 5 白名单技能 + screen_inspect（共 63）"""
 
     def test_agent_toolset_has_screen_inspect(self):
         with tempfile.TemporaryDirectory(prefix="mini_st_") as storage:
             agent = Agent(config=_cfg(storage))
             tools = agent._agent_openai_tools()
             names = [t["function"]["name"] for t in tools]
-            self.assertEqual(len(tools), 60)
+            self.assertEqual(len(tools), 63)
             self.assertIn("screen_inspect", names)
             self.assertIn("app_send_message", names)
+            self.assertIn("read_qq_chat", names)
             self.assertIn("send_email", names)
-            # screen_inspect 不是 SkillLibrary 技能（不改变 57/25 计数）
+            self.assertIn("browser_search", names)
+            self.assertIn("browser_extract", names)
+            # screen_inspect 不是 SkillLibrary 技能（不改变 57/26 计数）
             self.assertFalse(agent.api.is_agent_skill("screen_inspect"))
-            self.assertEqual(len(agent.api.list_skills_openai()), 2)
+            self.assertEqual(len(agent.api.list_skills_openai()), 5)
 
 
 class TestProjectVisionBridge(unittest.TestCase):

@@ -32,7 +32,8 @@ class TestSkillLibrary(unittest.TestCase):
         self.assertIn("browser_search", skills)
         self.assertIn("browser_extract", skills)
         self.assertIn("send_email", skills)
-        self.assertEqual(len(skills), 25)
+        self.assertIn("read_qq_chat", skills)
+        self.assertEqual(len(skills), 26)
 
     def test_system_info(self):
         """测试系统信息技能"""

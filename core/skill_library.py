@@ -29,7 +29,8 @@ from core import safety
 #   1. 高层次——模型应该整段调用，而不是拆成激活窗口/点击/输入等零散原语；
 #   2. 参数全部可 JSON 序列化（Python 闭包等无法经 tool_call 传输，只能由技能内部构造）。
 # 其余技能（文件整理/删除/索引等）仍只供 ExecutionEngine / 上层代码直接调用，不暴露给模型，
-# 避免 25 个技能与 57 个底层工具大面积重叠、模型误选低层原语。
+# 避免 26 个技能与 57 个底层工具大面积重叠、模型误选低层原语。
+# 入选白名单的 5 个 = app_send_message / read_qq_chat / send_email / browser_search / browser_extract。
 _AGENT_SKILL_SCHEMAS = {
     "app_send_message": {
         "description": (
@@ -98,6 +99,90 @@ _AGENT_SKILL_SCHEMAS = {
             "required": ["to", "subject", "body"],
         },
     },
+    "read_qq_chat": {
+        "description": (
+            "在 IM 桌面应用（QQ 等，经典布局）中『进入指定会话/群 → 读取最近可见的聊天记录』的"
+            "只读组合技能（只读、绝不外发消息，无需确认）。动作序列：激活应用 → 应用内搜索框输入"
+            "会话名 → 逐行点选搜索结果，每行用屏幕 OCR 核对聊天标题确实含该会话名（不会读错会话）"
+            "→ 截取聊天消息区 → 用视觉模型把最近可见的几条消息逐条转写成文字返回。"
+            "典型用途：你要它『先看某个群里聊了什么、再据此回一句话』——先调本技能拿到 transcript "
+            "（含发送者昵称与消息正文），看清楚后再组织 message 调 app_send_message 发送。"
+            "注意：读取依赖视觉源（主 llm 有视觉 或 config.yaml 配好 vision_bridge 段），"
+            "读到的是屏幕上当前可见的近端消息，不是无限历史。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "app_name": {
+                    "type": "string",
+                    "description": "IM 应用进程名/标题关键字（默认 QQ）",
+                    "default": "QQ",
+                },
+                "search_keyword": {
+                    "type": "string",
+                    "description": "要读取的会话/群名称关键词，必须与用户说的群名一致（如完整群名）",
+                },
+                "max_lines": {
+                    "type": "integer",
+                    "description": "希望转写的最近消息条数（屏幕能看到的范围内尽量取这么多）",
+                    "default": 20,
+                },
+                "verify_ocr": {
+                    "type": "boolean",
+                    "description": "读取前用屏幕 OCR 核对当前会话标题确实含关键词，默认开启；不要关闭（读错会话也不对）",
+                    "default": True,
+                },
+            },
+            "required": ["search_keyword"],
+        },
+    },
+    "browser_search": {
+        "description": (
+            "联网搜索：在浏览器搜索引擎（bing/baidu）里检索关键词，读取结果页文字摘要并返回"
+            "（只读，不改动任何东西）。适合回答需要『最新信息 / 外部资料 / 我不确定』的问题，"
+            "也是你唯一的联网获取信息的入口之一。动作：启动浏览器 → 打开引擎页 → 输入关键词 → "
+            "回车 → 读取结果文本（text_snippet）。想细读某一条结果时，把返回里的网址交给 "
+            "browser_extract 打开取正文。结果来自互联网，注意时效与来源可信度，引用时应说明出处，"
+            "不要编造没搜到的内容。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "搜索关键词（可用自然语言/多个词）",
+                },
+                "engine": {
+                    "type": "string",
+                    "description": "搜索引擎：bing / baidu（默认 bing）",
+                    "enum": ["bing", "baidu"],
+                    "default": "bing",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    "browser_extract": {
+        "description": (
+            "打开指定网页 URL，把页面正文转成文本返回（只读）。通常配合 browser_search 使用："
+            "先用它搜索拿到候选网址，再打开想细读的那一页取正文（text），便于据此总结/引用。"
+            "页面正文过长时会截断。网络内容注意时效与来源可信度。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "要打开读取正文的网页完整 URL（http/https）",
+                },
+                "selector": {
+                    "type": "string",
+                    "description": "可选 CSS 选择器；不填则读取整页正文",
+                },
+            },
+            "required": ["url"],
+        },
+    },
 }
 
 
@@ -105,6 +190,77 @@ _OCR_QUESTION = (
     "只看这一横条里的聊天/会话标题文字，原样输出标题，不要解释。"
     "如果看不到任何标题就输出'无'。"
 )
+
+# 读 QQ 会话最近聊天记录时，向视觉模型问的问题（要求逐条转写，只读、不外发）
+_CHAT_READ_QUESTION = (
+    "逐条转写图中聊天区域里最近可见的聊天记录：每条尽量给出【发送者昵称】和【消息正文】，"
+    "按屏幕从上到下顺序；同一个人连续多条消息也逐条列出。看不清的文字标[看不清]。"
+    "图中没有聊天内容就输出'（无可见聊天内容）'。只输出转写结果，不要解释、不要补全。"
+)
+
+# QQ 经典布局：聊天消息区相对窗口矩形的裁剪比例（横向避开左侧会话列/右侧成员列，
+# 纵向在标题横带之下、输入框之上）。与 _layout_profile 的 qq_classic 假设一致。
+_MSG_AREA = {
+    "x0_frac": 0.26,
+    "x1_frac": 0.84,
+    "y0_frac": 0.15,
+    "y_from_bottom_frac": 0.14,
+}
+
+
+def _crop_messages_area(screenshot_path, rect, out_path):
+    """裁出聊天消息区（避开会话列/成员列/标题/输入框），供视觉转写最近聊天记录"""
+    from PIL import Image
+    im = Image.open(screenshot_path).convert("RGB")
+    L, T, W, H = rect["left"], rect["top"], rect["width"], rect["height"]
+    x0 = L + int(W * _MSG_AREA["x0_frac"])
+    x1 = L + int(W * _MSG_AREA["x1_frac"])
+    y0 = T + int(H * _MSG_AREA["y0_frac"])
+    y1 = T + H - int(H * _MSG_AREA["y_from_bottom_frac"])
+    im.crop((x0, y0, x1, y1)).save(out_path)
+    return out_path
+
+
+def transcribe_chat_region(screenshot_path, rect, out_path, question, vision_js=None):
+    """
+    把聊天消息区截图裁出来交视觉源转写，返回文字（供 read_qq_chat 读最近聊天记录）。
+
+    视觉源选择与 make_ocr_verify 一致：
+      1. 显式传 vision_js → 外部 node 视觉桥脚本（旧通道）；
+      2. 默认走项目内视觉桥 core.vision_bridge（describe_image 自动按 llm.supports_vision
+         选主对话模型或 vision_bridge 段独立视觉 API）；
+      3. 都没有 → 明确抛 VisionBridgeError（附 config.yaml 指引），不假装读懂。
+    """
+    from core import vision_bridge as _vb
+
+    crop = _crop_messages_area(screenshot_path, rect, out_path)
+
+    def _run_node(js_path):
+        import subprocess
+        r = subprocess.run(
+            ["node", js_path, crop, question],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+        )
+        return (r.stdout + r.stderr).strip()
+
+    # 1) 显式外部 node 桥（旧通道）
+    if vision_js is not None:
+        if not Path(vision_js).exists():
+            raise RuntimeError(
+                f"指定的视觉桥脚本不存在：{vision_js}。"
+                "可用环境变量 AGENT_VISION_JS 指定脚本路径，或配置 vision_bridge 段。")
+        return _run_node(vision_js)
+
+    # 2) 默认：项目内视觉桥（config.yaml 的 vision_bridge 段 / 主 llm 有视觉则主模型看图）
+    try:
+        _vb.require_vision()
+    except _vb.VisionBridgeError:
+        # 3) 兼容旧通道：没配 vision_bridge 但机器上还有外部 node 桥 → 用它
+        legacy = _resolve_vision_js()
+        if legacy and Path(legacy).exists():
+            return _run_node(legacy)
+        raise
+    return _vb.describe_image(crop, question)
 
 
 def _resolve_vision_js():
@@ -264,6 +420,7 @@ class SkillLibrary:
         self.register("smart_organize", self.smart_organize)
         self.register("app_open", self.app_open)
         self.register("app_send_message", self.app_send_message)
+        self.register("read_qq_chat", self.read_qq_chat)
         self.register("send_email", self.send_email)
         self.register("browser_search", self.browser_search)
         self.register("browser_extract", self.browser_extract)
@@ -1264,6 +1421,121 @@ class SkillLibrary:
             "verify_result": verify_result,
         }
 
+    def read_qq_chat(self, app_name="QQ", search_keyword=None, max_lines=20,
+                     verify=None, layout="qq_classic", max_result_rows=5,
+                     verify_ocr=True, vision_js=None):
+        """
+        进入 QQ 指定会话/群，读取最近可见的聊天记录（只读组合型 Agent Skill，不外发消息）
+
+        编排流程（前半段与 app_send_message 同一套真机验证过的定位：先搜到目标会话，
+        而不是乱点）：find_window → activate_window → 探针定位搜索框 → 输入会话名 →
+        逐行点搜索结果、每行屏幕 OCR 核对聊天标题确实含关键词（读错会话同样不对）→
+        命中后截取**聊天消息区** → 用视觉模型把最近可见的几条消息逐条转写成文字返回。
+
+        与 app_send_message 的关系：这是『看』，那是『发』。用户要你"先看某群聊了什么、
+        再回一句话"时，先调本技能拿 transcript，再据内容调 app_send_message 发送。
+
+        参数：
+            app_name:        应用进程名 / 标题关键字（默认 QQ）
+            search_keyword:  要读取的会话 / 群名关键字（如"一中兄弟会"）
+            max_lines:       希望转写的最近消息条数（屏幕可见范围内尽量取这么多）
+            verify:          可选校验回调 verify(screenshot_path) -> bool（同 app_send_message）
+            layout:          布局模板（默认 qq_classic）
+            max_result_rows: 最多向下试几行搜索结果（默认 5）
+            verify_ocr:      默认 True。未显式传 verify 时由技能自动构造"屏幕 OCR 门"
+                             （make_ocr_verify：裁标题横带交视觉源 OCR，标题必须含
+                             search_keyword 才放行），确保读的是对的那个会话。
+            vision_js:       可选旧通道：外部 node 视觉桥脚本路径
+
+        返回：
+            {"window", "conversation", "max_lines", "verify_result",
+             "transcript", "chars", "screenshot"}
+
+        说明：
+            - 只读：本技能全程不向任何会话发送消息，风险分级 READ_ONLY、不需要确认门；
+            - 读取与 OCR 核对都依赖视觉源（主 llm 有视觉 或 config.yaml 的 vision_bridge 段），
+              没配好会明确报错（附指引），不会假装读到了内容。
+        """
+        if not search_keyword:
+            raise ValueError("search_keyword（要读取的会话/群名关键词）必填")
+
+        # 1) 定位并激活目标窗口（与 app_send_message 同一套）
+        win = self.app.find_window(process=app_name)
+        if win is None:
+            win = self.app.find_window(title=app_name)
+        if win is None:
+            raise LookupError(f"未找到应用窗口: {app_name}")
+        hwnd = int(win["hwnd"])
+        self.app.activate_window(hwnd)
+        time.sleep(0.8)
+
+        rect = self.app.get_window_rect(hwnd)
+        L, T, W, H = rect["left"], rect["top"], rect["width"], rect["height"]
+        profile = self._layout_profile(layout)
+
+        # 默认 OCR 门：确认点进的确实是目标会话（读错会话 = 读到错误信息）
+        if verify is None and verify_ocr:
+            verify = make_ocr_verify(search_keyword, rect, vision_js=vision_js)
+
+        # 2) 探针定位搜索框并输入会话名
+        search_box = self._probe_text_field(
+            x=L + int(W * profile["search_x_frac"]),
+            y_from=T + int(H * profile["search_y_frac"][0]),
+            y_to=T + int(H * profile["search_y_frac"][1]),
+            step=6,
+        )
+        if search_box is None:
+            raise RuntimeError("未能定位搜索框（探针未命中任何文本框）")
+        self.app.click_at(search_box[0], search_box[1])
+        time.sleep(0.3)
+        self.app.send_text(search_keyword)
+        time.sleep(1.0)   # 等待下拉结果出现
+
+        # 3) 向下逐行点搜索结果，交给 verify 校验（OCR 核对会话标题），命中才继续
+        x_res = L + int(W * profile["result_x_frac"])
+        row_start = search_box[1] + int(H * profile["result_row_gap_frac"])
+        row_step = max(8, int(H * profile["result_row_step_frac"]))
+        clicked_row = None
+        verify_result = None
+        for k in range(max_result_rows):
+            y = row_start + k * row_step
+            self.app.click_at(x_res, y)
+            time.sleep(0.6)
+            shot = self.app.take_screenshot()
+            verify_result = None
+            if verify is not None:
+                ok = verify(shot)
+                verify_result = bool(ok)
+                if not ok:
+                    continue   # 不是目标行，试下一行
+            clicked_row = y
+            break
+        if clicked_row is None:
+            raise RuntimeError(
+                f"未能在搜索结果中确认目标会话（verify 对 {max_result_rows} 行均未通过），未读取任何内容")
+
+        # 4) 等消息区刷新 → 截屏 → 裁聊天消息区 → 视觉转写最近聊天记录
+        time.sleep(0.8)
+        shot = self.app.take_screenshot()
+
+        import tempfile
+        out = os.path.join(tempfile.gettempdir(), "qq_chat_transcript.png")
+        question = (
+            _CHAT_READ_QUESTION
+            + f"（尽量转写最近约 {int(max_lines)} 条。）"
+        )
+        transcript = transcribe_chat_region(shot, rect, out, question, vision_js=vision_js)
+
+        return {
+            "window": win,
+            "conversation": search_keyword,
+            "max_lines": int(max_lines),
+            "verify_result": verify_result,
+            "transcript": transcript,
+            "chars": len(transcript),
+            "screenshot": shot,
+        }
+
     # ------------------------------------------------------------------
     # app_send_message 私有辅助
     # ------------------------------------------------------------------
@@ -1282,6 +1554,11 @@ class SkillLibrary:
                 "input_y_from_bottom_frac": 0.03,   # 从底部向上扫的起点
                 "input_y_to_from_bottom_frac": 0.22,  # 向上扫的终点
                 "input_probe_step": 6,
+                # 聊天消息区裁剪（读取最近聊天记录用；与模块级 _MSG_AREA 一致，仅作登记参考）
+                "msg_x0_frac": _MSG_AREA["x0_frac"],
+                "msg_x1_frac": _MSG_AREA["x1_frac"],
+                "msg_y0_frac": _MSG_AREA["y0_frac"],
+                "msg_y_from_bottom_frac": _MSG_AREA["y_from_bottom_frac"],
             }
         raise ValueError(f"未知布局模板: {layout}")
 

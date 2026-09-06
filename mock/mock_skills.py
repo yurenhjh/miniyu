@@ -32,6 +32,7 @@ class MockSkillLibrary:
             "smart_organize",
             "app_open",
             "app_send_message",
+            "read_qq_chat",
             "send_email",
             "browser_search",
             "browser_extract"
@@ -154,6 +155,19 @@ class MockSkillLibrary:
             "screenshot": "[MOCK] /tmp/mock_screenshot.png",
         }
 
+    def read_qq_chat(self, app_name="QQ", search_keyword=None, max_lines=20,
+                     verify=None, layout="qq_classic", max_result_rows=5,
+                     verify_ocr=True, vision_js=None):
+        return {
+            "window": {"hwnd": 101, "title": app_name, "pid": 1001},
+            "conversation": search_keyword,
+            "max_lines": int(max_lines),
+            "verify_result": bool(verify_ocr),
+            "transcript": "[MOCK] 群友A: 你好\n群友B: 今晚一起吗？",
+            "chars": 20,
+            "screenshot": "[MOCK] /tmp/mock_qq_chat.png",
+        }
+
     def send_email(self, to, subject, body, cc=None, verify=True):
         return {
             "to": to,
@@ -169,7 +183,8 @@ class MockSkillLibrary:
     # ---- Agent 白名单技能（与正式版 SkillLibrary 接口对齐） ----
 
     # 与 core.skill_library._AGENT_SKILL_SCHEMAS 同源的白名单名（mock 只保证名字/形状）
-    _AGENT_WHITELIST = ("app_send_message", "send_email")
+    _AGENT_WHITELIST = ("app_send_message", "read_qq_chat",
+                        "send_email", "browser_search", "browser_extract")
 
     def openai_skill_names(self):
         return [n for n in self._AGENT_WHITELIST if n in self.list_skills()]
@@ -179,11 +194,36 @@ class MockSkillLibrary:
 
     def list_openai_tools(self):
         """返回 mock 白名单技能的 OpenAI function 描述（形状与正式版一致）"""
-        out = []
-        for name in self.openai_skill_names():
-            if name == "send_email":
-                desc = "[MOCK] send_email：发送邮件（SMTP + 自动 IMAP 回读核验）"
-                params = {
+        _SCHEMAS = {
+            "app_send_message": {
+                "desc": "[MOCK] app_send_message：在 IM 应用内搜索会话并发送消息（含 OCR 核对）",
+                "params": {
+                    "type": "object",
+                    "properties": {
+                        "app_name": {"type": "string", "default": "QQ"},
+                        "search_keyword": {"type": "string"},
+                        "message": {"type": "string"},
+                        "verify_ocr": {"type": "boolean", "default": True},
+                    },
+                    "required": ["search_keyword", "message"],
+                },
+            },
+            "read_qq_chat": {
+                "desc": "[MOCK] read_qq_chat：进入 QQ 指定会话读取最近聊天记录（只读，OCR 转写）",
+                "params": {
+                    "type": "object",
+                    "properties": {
+                        "app_name": {"type": "string", "default": "QQ"},
+                        "search_keyword": {"type": "string"},
+                        "max_lines": {"type": "integer", "default": 20},
+                        "verify_ocr": {"type": "boolean", "default": True},
+                    },
+                    "required": ["search_keyword"],
+                },
+            },
+            "send_email": {
+                "desc": "[MOCK] send_email：发送邮件（SMTP + 自动 IMAP 回读核验）",
+                "params": {
                     "type": "object",
                     "properties": {
                         "to": {"type": "string"},
@@ -193,25 +233,40 @@ class MockSkillLibrary:
                         "verify": {"type": "boolean", "default": True},
                     },
                     "required": ["to", "subject", "body"],
-                }
-            else:
-                desc = "[MOCK] app_send_message：在 IM 应用内搜索会话并发送消息（含 OCR 核对）"
-                params = {
+                },
+            },
+            "browser_search": {
+                "desc": "[MOCK] browser_search：浏览器联网搜索并返回结果摘要（bing/baidu）",
+                "params": {
                     "type": "object",
                     "properties": {
-                        "app_name": {"type": "string", "default": "QQ"},
-                        "search_keyword": {"type": "string"},
-                        "message": {"type": "string"},
-                        "verify_ocr": {"type": "boolean", "default": True},
+                        "query": {"type": "string"},
+                        "engine": {"type": "string", "enum": ["bing", "baidu"], "default": "bing"},
                     },
-                    "required": ["search_keyword", "message"],
-                }
+                    "required": ["query"],
+                },
+            },
+            "browser_extract": {
+                "desc": "[MOCK] browser_extract：打开网页 URL 读取正文文本",
+                "params": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "selector": {"type": "string"},
+                    },
+                    "required": ["url"],
+                },
+            },
+        }
+        out = []
+        for name in self.openai_skill_names():
+            spec = _SCHEMAS[name]
             out.append({
                 "type": "function",
                 "function": {
                     "name": name,
-                    "description": desc,
-                    "parameters": params,
+                    "description": spec["desc"],
+                    "parameters": spec["params"],
                 },
             })
         return out

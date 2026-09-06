@@ -1,6 +1,6 @@
 # Group4 - miniyu 桌面 AI 助手（Tool Registry + OS Skills + Agent 编排层）
 
-## 完整桌面 AI 助手（LLM 驱动，function-calling 调用 57 个系统工具 + 25 个技能）
+## 完整桌面 AI 助手（LLM 驱动，function-calling 调用 57 个系统工具 + 26 个技能）
 
 ---
 
@@ -42,7 +42,7 @@ python examples/agent_cli.py
 
 # 2. 项目简介
 
-本项目为课程设计 **第4组：miniyu 桌面 AI 助手**（LLM 驱动，function-calling 调用 57 个系统工具 + 25 个技能），底层以"工具注册 + OS Skills（Tool Registry + OS Skills）"作为统一系统能力接口。
+本项目为课程设计 **第4组：miniyu 桌面 AI 助手**（LLM 驱动，function-calling 调用 57 个系统工具 + 26 个技能），底层以"工具注册 + OS Skills（Tool Registry + OS Skills）"作为统一系统能力接口。
 
 本模块负责为 Agentic OS 提供统一的系统能力接口，包括：
 
@@ -212,7 +212,7 @@ miniyu 是第4组独立实现的 AI 桌面助手，通过 LLM 驱动的 Agent �
     │   ├── DeterministicBrain（离线脑，规则匹配，零依赖，默认）
     │   └── OpenAICompatibleClient（真实 LLM，兼容 GPT/DeepSeek/豆包/Ollama 等）
     ↓
- OSServiceAPI（57 个工具 + 25 个技能）
+ OSServiceAPI（57 个工具 + 26 个技能）
     ↓
  实际执行
 ```
@@ -281,7 +281,7 @@ group4_tools_os_skills/
 │   ├── __init__.py
 │   ├── tool_registry.py           # 工具注册表（正式版，57 工具，含 click_at + 系统管理）
 	│   ├── tool_schema.py           # 工具描述 Schema（ToolSpec，多格式转换）
-	│   ├── skill_library.py           # OS Skills 技能库（25 技能，含 app_*/browser_*/邮件 send_email）
+	│   ├── skill_library.py           # OS Skills 技能库（26 技能，含 app_*/browser_*/QQ读 read_qq_chat/邮件 send_email）
 	│   ├── app_controller.py          # 应用操作控制器（Windows/Linux；click_at / read_clipboard / get_window_rect）
 	│   ├── browser_controller.py      # 浏览器结构化控制（CDP：snapshot 索引 + insertText 中文输入）
 	│   ├── safety.py                  # 安全分级元数据 + 确认门（call_safely / run_skill_safely）
@@ -297,9 +297,9 @@ group4_tools_os_skills/
 ├── mock/                          # Mock模块（跨组联调用）
 │   ├── __init__.py                # Mock统一入口 + MockOSServiceAPI
 │   ├── mock_tools.py              # Mock版工具注册表（57个工具）
-│   └── mock_skills.py             # Mock版技能库（25个技能）
+│   └── mock_skills.py             # Mock版技能库（26个技能）
 │
-├── tests/                         # 单元测试（共 391 个，全部通过）
+├── tests/                         # 单元测试（共 404 个，全部通过）
 │   ├── __init__.py
 │   ├── test_tool_registry.py      # ToolRegistry测试（92个：全部工具+新工具+异常+别名+错误码）
 │   ├── test_skills.py             # SkillLibrary测试（43个：基础+扩展+搜索+Agent）
@@ -312,9 +312,11 @@ group4_tools_os_skills/
 	│   ├── test_llm_client.py         # LLM客户端测试（30个）
 	│   └── test_agent.py              # Agent编排层测试（16个）
 	│   ├── test_model_switch.py       # Web模型切换测试（12个）
-	│   ├── test_agent_skills.py      # Agent可调组合技能：技能→模型函数 / 技能分发 / OCR门（15个）
+	│   ├── test_agent_skills.py      # Agent可调组合技能：技能→模型函数 / 技能分发 / OCR门（17个）
 	│   ├── test_agent_vision.py      # Agent截图理解(视觉双通道)/统一视觉源/过程产物生命周期测试（19个）
 	│   ├── test_authz.py              # 授权档位（base/advanced/full）确认门测试（21个）
+│   ├── test_email.py              # 邮件全链路：SMTP 发信/IMAP 回读核验 + Agent 分发（27个）
+│   ├── test_agent_read_web.py     # QQ『先读后回』read_qq_chat + 联网 browser_* 白名单（11个）
 
 │
 ├── examples/                      # 真机可复跑示例 + 用户界面
@@ -451,6 +453,7 @@ group4_tools_os_skills/
 | smart_organize | 智能整理（按类型/日期） | 识别→分类→移动→生成报告 |
 | app_open | 打开指定应用 | 启动可执行文件 |
 | app_send_message | 在应用内搜索并发送消息 | 组合窗口/键鼠/输入，端到端完成 |
+| read_qq_chat | 读取 QQ 会话最近聊天（只读） | 搜索进入目标会话→OCR 核对会话标题→截图转写聊天区返回文本 |
 | send_email | 发送邮件并自动回读核验 | SMTP 发信 + IMAP 回读发件箱『已发送』（可核验收件人收件箱『确实到达』），对外不可撤回、HIGH 确认门 |
 | browser_search | 结构化网络搜索 | 打开引擎→定位→输入→回车→读结果 |
 | browser_extract | 打开网页并提取内容 | 结构化读取正文/指定元素 |
@@ -755,7 +758,7 @@ registry.call("browser_close", {})
 # 10. 运行测试
 
 ```bash
-# 运行所有测试（共 391 个）
+# 运行所有测试（共 404 个）
 python -m pytest tests/ -v
 
 # 运行单个测试文件
@@ -771,6 +774,8 @@ python -m pytest tests/test_llm_client.py -v
 python -m pytest tests/test_agent.py -v
 python -m pytest tests/test_agent_skills.py -v
 python -m pytest tests/test_email.py -v
+python -m pytest tests/test_authz.py -v
+python -m pytest tests/test_agent_read_web.py -v
 
 > 💡 运行搜索相关测试（`TestSearchModes`）会实时列出每个模式实际命中的搜索结果，例如：
 > ```
@@ -806,6 +811,8 @@ python -m pytest tests/test_email.py -v
 - **2026-09-06 授权档位（基础 / 高级 / 全自动）**：把「高危操作确认门」从二值开关升级成三档可切换授权 `agent.authorization`——base=基础授权(全部高危需确认，现状)；advanced=高级授权(仅永久删除文件需确认，run_command·kill_process·QQ 发消息·发邮件自动放行)；full=全自动(从不确认，含删除)。`core/safety.py` 新增纯函数 `should_confirm(level,name,risk)` 与 `resolve_authz_level`（旧 `confirm_high_risk=false` ⇔ full，配置不回归）；Agent 运行时确认门（`_execute_tool`/`_execute_skill`）改读档位；Web 顶栏新增授权档位下拉（`/switch-authz` 持久化 config.yaml + 热改运行中 agent 不丢会话，切「全自动」先弹一次浏览器确认把关），CLI 加 `/authz` 命令；引擎级 fail-safe（call_safely/run_skill_safely）保持按 HIGH 不变，QQ 发送的屏幕 OCR 核对门在高级/全自动下仍生效（自动放行≠盲发）。新增 `tests/test_authz.py` 21 例 → **370→391 全绿**（15 个测试文件）
 - **2026-09-06 邮件全链路（自验证技能 send_email）**：新增 `core/email_client.py`（纯 stdlib：`smtplib`/`imaplib`/`email`，零新增依赖）+ Agent 白名单组合技能 **send_email**——SMTP 发信后自动 IMAP 回读发件箱『已发送』核验已落库；config.yaml 的 email 段配 `verify_inbox`（收件侧邮箱 IMAP）再轮询收件人收件箱核验『确实到达』（双端闭环），回读未命中如实报 found=False。授权码与 `llm.api_key` 同级敏感：只进 config/env、不入库（config.yaml.email 段入库留空、本地填回后不要再 commit）。**工具 57 不变、技能 24→25**；send_email 走 HIGH 确认门（对外发送、不可撤回）。新增 `examples/email_demo.py`（直驱技能 / `--agent` 真实 LLM 双模式 + 收尾独立 IMAP 核验）。单测全绿 343→**368**（新增 `tests/test_email.py` 25 例：fail-closed、协议层、技能编排、Agent 分发、Mock 对等）。**QQ 真机实跑**（2026-09-06）：主号发小号 `你好呀，小余人`，SMTP 接受、**到达核验命中（收件箱真收到）**；实跑暴露并修复 3 个协议层坑——QQ 投递改写 Message-ID、中文主题存 RFC2047 编码（→ 头解码后按主题兜底匹配）、发件箱名 `Sent Messages` 带空格需按 RFC3501 加引号；另发现 **QQ 授权码 SMTP 不在发件箱留副本** → 发件箱未命中≠没发，双端闭环下以收件箱到达核验为铁证。单测 **368→370**（test_email 25→27，+SELECT 引号、+RFC2047 主题命中 2 条回归）。证据 `docs/evidence/email_live_qq.md`
 
+- **2026-09-06 QQ『先读后回』只读技能 + 联网白名单（给模型"能读、能查"的上下文）**：针对真机反馈"让它找 QQ 群、看聊天回话，它说 send 技能只能发不能读"——根因是**模型能"想"的范围只有上下文里出现的函数**，能力没暴露＝对它不存在。修复：① 新只读技能 **read_qq_chat**（搜索进入目标会话→OCR 核对会话标题（`make_ocr_verify`，读错群会失败关闭）→截图裁聊天区→视觉桥转写最近聊天返回文本，只读不外发）；② Agent 白名单由 2 扩到 **5**（app_send_message / **read_qq_chat** / send_email / **browser_search** / **browser_extract**），SYSTEM_PROMPT 新守则：QQ 找群看聊天＝先 `read_qq_chat` 再 `app_send_message`，联网查资料＝`browser_search`→`browser_extract` 并标注来源、不得编造；③ 技能 25→**26**（`core/vision_bridge` 缺视觉源时明确报错引导，不假装读到）。全量 **391→404 全绿**（16 个测试文件：新增 `tests/test_agent_read_web.py` 11 例 + `test_agent_skills` +2，mock 技能库/白名单对等）
+
 ## 第4周计划
 - 工具签名验证（可选）
 - 权限控制与白名单
@@ -819,7 +826,7 @@ python -m pytest tests/test_email.py -v
 - **跨平台** — 兼容 Windows / Linux / macOS，使用 `pathlib` 统一路径处理，内置编码安全打印
 - **模块化** — 工具、技能、接口相互独立，新增工具只需注册无需改调用逻辑
 - **可扩展** — 支持动态注册/注销工具和技能
-- **可测试** — 391个单元测试覆盖核心功能，支持Mock测试和接口联调测试
+- **可测试** — 404个单元测试覆盖核心功能，支持Mock测试和接口联调测试
 - **可统计** — 内置调用次数、成功率、Top5排名等统计功能
 
 # 14. 跨平台兼容说明
@@ -828,7 +835,7 @@ python -m pytest tests/test_email.py -v
 
 | 系统 | 状态 | 说明 |
 |------|------|------|
-| Windows 11 | ✅ 通过 | 391个测试全部通过，Demo正常运行 |
+| Windows 11 | ✅ 通过 | 404个测试全部通过，Demo正常运行 |
 | Ubuntu/Linux | ✅ 兼容 | 使用 `pathlib` / `shutil` 等跨平台库，无需修改 |
 | macOS | ✅ 预期兼容 | 内部测试未进行，理论兼容 |
 

@@ -416,7 +416,10 @@ class TestMockEmailParity(unittest.TestCase):
         m = MockSkillLibrary()
         self.assertIn("send_email", m.list_skills())
         names = m.openai_skill_names()
-        self.assertEqual(names, ["app_send_message", "send_email"])
+        self.assertEqual(
+            names,
+            ["app_send_message", "read_qq_chat", "send_email",
+             "browser_search", "browser_extract"])
 
     def test_mock_send_email_result_shape(self):
         from mock.mock_skills import MockSkillLibrary

@@ -72,19 +72,22 @@ class _FakeApp:
 class TestAgentSkillExposure(unittest.TestCase):
     """白名单技能 → 模型可见的 OpenAI function"""
 
-    def test_whitelist_app_send_message_and_send_email(self):
+    def test_whitelist_agent_skills(self):
         sk = SkillLibrary()
-        self.assertEqual(sk.openai_skill_names(),
-                         ["app_send_message", "send_email"])
-        self.assertTrue(sk.is_agent_skill("app_send_message"))
-        self.assertTrue(sk.is_agent_skill("send_email"))
+        self.assertEqual(
+            sk.openai_skill_names(),
+            ["app_send_message", "read_qq_chat", "send_email",
+             "browser_search", "browser_extract"])
+        for name in ("app_send_message", "read_qq_chat", "send_email",
+                     "browser_search", "browser_extract"):
+            self.assertTrue(sk.is_agent_skill(name))
         self.assertFalse(sk.is_agent_skill("system_info"))   # 非白名单不暴露
         self.assertFalse(sk.is_agent_skill("no_such_skill"))
 
     def test_openai_tool_schema_shape(self):
         sk = SkillLibrary()
         tools = sk.list_openai_tools()
-        self.assertEqual(len(tools), 2)
+        self.assertEqual(len(tools), 5)
         by_name = {t["function"]["name"]: t["function"] for t in tools}
 
         fn = by_name["app_send_message"]
@@ -107,26 +110,64 @@ class TestAgentSkillExposure(unittest.TestCase):
         self.assertIn("verify", params["properties"])
         self.assertIs(params["properties"]["verify"].get("default"), True)
 
+    def test_read_qq_chat_schema_is_read_only(self):
+        """read_qq_chat：只读技能 → 无 message 参数、OCR 默认开、不要求确认"""
+        sk = SkillLibrary()
+        by_name = {t["function"]["name"]: t["function"]
+                   for t in sk.list_openai_tools()}
+        fn = by_name["read_qq_chat"]
+        self.assertIn("读取", fn["description"])
+        params = fn["parameters"]
+        # 只读：不要求发消息正文，也没有外发动作参数
+        self.assertEqual(params["required"], ["search_keyword"])
+        self.assertNotIn("message", params["properties"])
+        self.assertIn("max_lines", params["properties"])
+        self.assertIn("verify_ocr", params["properties"])
+        # 不给 Python 闭包 verify（tool_call 传不了）
+        self.assertNotIn("verify", params["properties"])
+        self.assertIs(params["properties"]["verify_ocr"].get("default"), True)
+
+    def test_web_skills_schema_shape(self):
+        """browser_search/browser_extract：联网只读技能，schema 齐全且无外发参数"""
+        sk = SkillLibrary()
+        by_name = {t["function"]["name"]: t["function"]
+                   for t in sk.list_openai_tools()}
+        fn = by_name["browser_search"]
+        self.assertIn("搜索", fn["description"])
+        self.assertEqual(fn["parameters"]["required"], ["query"])
+        self.assertIn("engine", fn["parameters"]["properties"])
+        self.assertEqual(fn["parameters"]["properties"]["engine"]["default"], "bing")
+
+        fn = by_name["browser_extract"]
+        self.assertIn("URL", fn["description"])
+        self.assertEqual(fn["parameters"]["required"], ["url"])
+        self.assertIn("selector", fn["parameters"]["properties"])
+
     def test_os_service_api_passthrough(self):
         api = OSServiceAPI()
-        self.assertEqual(api.openai_skill_names(),
-                         ["app_send_message", "send_email"])
+        self.assertEqual(
+            api.openai_skill_names(),
+            ["app_send_message", "read_qq_chat", "send_email",
+             "browser_search", "browser_extract"])
         self.assertTrue(api.is_agent_skill("app_send_message"))
         self.assertTrue(api.is_agent_skill("send_email"))
         self.assertFalse(api.is_agent_skill("system_info"))
-        self.assertEqual(len(api.list_skills_openai()), 2)
+        self.assertEqual(len(api.list_skills_openai()), 5)
 
     def test_agent_toolset_includes_skill(self):
-        """模型拿到的是 57 个底层工具 + 2 个白名单技能（总数 59）"""
+        """模型拿到的是 57 个底层工具 + 5 个白名单技能（总数 62）"""
         with tempfile.TemporaryDirectory(prefix="mini_ats_") as tmp:
             agent = Agent(config=_cfg(tmp))
             registry = agent.api.list_tools_openai()
             merged = registry + agent.api.list_skills_openai()
             names = [t["function"]["name"] for t in merged]
         self.assertEqual(len(registry), 57)                 # registry 本身不变
-        self.assertEqual(len(names), 59)
+        self.assertEqual(len(names), 62)
         self.assertIn("app_send_message", names)
         self.assertIn("send_email", names)
+        self.assertIn("read_qq_chat", names)
+        self.assertIn("browser_search", names)
+        self.assertIn("browser_extract", names)
 
     def test_system_prompt_steers_im_send(self):
         with tempfile.TemporaryDirectory(prefix="mini_ats_") as tmp:

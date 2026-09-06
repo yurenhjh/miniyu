@@ -186,6 +186,7 @@ SKILL_META = {
     "smart_organize": (MEDIUM, "整理", "智能整理（移动文件）"),
     "app_open": (LOW, "应用", "打开指定应用"),
     "app_send_message": (HIGH, "应用", "在应用内发送消息（对外可见、不可撤回）"),
+    "read_qq_chat": (READ_ONLY, "应用", "读取 QQ 会话最近聊天记录（只读、不外发）"),
     "send_email": (HIGH, "邮件", "发送邮件（对外可见、不可撤回，发后自动 IMAP 回读核验）"),
     "browser_search": (LOW, "浏览器", "结构化网络搜索"),
     "browser_extract": (READ_ONLY, "浏览器", "网页内容提取"),
