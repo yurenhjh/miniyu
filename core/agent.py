@@ -54,12 +54,14 @@ SYSTEM_PROMPT = (
     "必须直接调用 app_send_message 这一个组合技能（它会自己搜索、用屏幕 OCR 核对会话标题、确认无误才发送），"
     "绝不拆成『激活窗口/点击/输入文字/回车』等零散步骤——那样可能发到错误的会话。\n"
     "7. 当你对当前执行状态不确定（工具结果含糊/要看界面再决定下一步/上一步可能出错想看清原因）时，"
-    "先调用 screen_inspect 截一张当前屏幕来看，再决定下一步；不要因为界面情况不明就回复『做不到/太复杂/无法继续』。"
+    "先调用 screen_inspect 截一张当前屏幕来看，再决定下一步；不要因为界面情况不明就回复『做不到/太复杂/无法继续』。\n"
+    "8. 发邮件必须调用 send_email 这一个组合技能（它会 SMTP 发信并自动 IMAP 回读核验已发送/到达），"
+    "收件人与主题要跟用户说的完全一致，正文按用户要求写；发信账号与授权码在 config.yaml 的 email 段配好。"
 )
 
 
 # Agent 视觉能力函数（"截图理解"）：让模型在不确定 / 复杂 / 出错时主动看一眼屏幕。
-# 它不属于 SkillLibrary（不改变 57 工具 / 24 技能计数），而是 Agent 自带的可调函数：
+# 它不属于 SkillLibrary（不改变 57 工具 / 25 技能计数），而是 Agent 自带的可调函数：
 #   视觉模型 → 截图以原图内联给模型看；无视觉模型 → 调项目内视觉桥（config.yaml 的
 #   vision_bridge 段，独立视觉 API）把图转成文字描述。
 _AGENT_VISION_TOOL = {
@@ -337,7 +339,7 @@ class Agent:
         tools = self.api.list_tools_mcp()
 
         # 获取工具描述（OpenAI 格式，用于真实 LLM）
-        # = 57 个底层工具 + 白名单组合技能（app_send_message 等）+ 视觉能力函数 screen_inspect
+        # = 57 个底层工具 + 白名单组合技能（app_send_message、send_email 等）+ 视觉能力函数 screen_inspect
         openai_tools = self._agent_openai_tools()
 
         for step in range(1, self.max_steps + 1):

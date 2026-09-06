@@ -1,6 +1,6 @@
 # Group4 - miniyu 桌面 AI 助手（Tool Registry + OS Skills + Agent 编排层）
 
-## 完整桌面 AI 助手（LLM 驱动，function-calling 调用 57 个系统工具 + 24 个技能）
+## 完整桌面 AI 助手（LLM 驱动，function-calling 调用 57 个系统工具 + 25 个技能）
 
 ---
 
@@ -42,7 +42,7 @@ python examples/agent_cli.py
 
 # 2. 项目简介
 
-本项目为课程设计 **第4组：miniyu 桌面 AI 助手**（LLM 驱动，function-calling 调用 57 个系统工具 + 24 个技能），底层以"工具注册 + OS Skills（Tool Registry + OS Skills）"作为统一系统能力接口。
+本项目为课程设计 **第4组：miniyu 桌面 AI 助手**（LLM 驱动，function-calling 调用 57 个系统工具 + 25 个技能），底层以"工具注册 + OS Skills（Tool Registry + OS Skills）"作为统一系统能力接口。
 
 本模块负责为 Agentic OS 提供统一的系统能力接口，包括：
 
@@ -212,7 +212,7 @@ miniyu 是第4组独立实现的 AI 桌面助手，通过 LLM 驱动的 Agent �
     │   ├── DeterministicBrain（离线脑，规则匹配，零依赖，默认）
     │   └── OpenAICompatibleClient（真实 LLM，兼容 GPT/DeepSeek/豆包/Ollama 等）
     ↓
- OSServiceAPI（57 个工具 + 24 个技能）
+ OSServiceAPI（57 个工具 + 25 个技能）
     ↓
  实际执行
 ```
@@ -281,7 +281,7 @@ group4_tools_os_skills/
 │   ├── __init__.py
 │   ├── tool_registry.py           # 工具注册表（正式版，57 工具，含 click_at + 系统管理）
 	│   ├── tool_schema.py           # 工具描述 Schema（ToolSpec，多格式转换）
-	│   ├── skill_library.py           # OS Skills 技能库（24 技能，含 app_*/browser_*）
+	│   ├── skill_library.py           # OS Skills 技能库（25 技能，含 app_*/browser_*/邮件 send_email）
 	│   ├── app_controller.py          # 应用操作控制器（Windows/Linux；click_at / read_clipboard / get_window_rect）
 	│   ├── browser_controller.py      # 浏览器结构化控制（CDP：snapshot 索引 + insertText 中文输入）
 	│   ├── safety.py                  # 安全分级元数据 + 确认门（call_safely / run_skill_safely）
@@ -297,9 +297,9 @@ group4_tools_os_skills/
 ├── mock/                          # Mock模块（跨组联调用）
 │   ├── __init__.py                # Mock统一入口 + MockOSServiceAPI
 │   ├── mock_tools.py              # Mock版工具注册表（57个工具）
-│   └── mock_skills.py             # Mock版技能库（24个技能）
+│   └── mock_skills.py             # Mock版技能库（25个技能）
 │
-├── tests/                         # 单元测试（共 343 个，全部通过）
+├── tests/                         # 单元测试（共 370 个，全部通过）
 │   ├── __init__.py
 │   ├── test_tool_registry.py      # ToolRegistry测试（92个：全部工具+新工具+异常+别名+错误码）
 │   ├── test_skills.py             # SkillLibrary测试（43个：基础+扩展+搜索+Agent）
@@ -450,6 +450,7 @@ group4_tools_os_skills/
 | smart_organize | 智能整理（按类型/日期） | 识别→分类→移动→生成报告 |
 | app_open | 打开指定应用 | 启动可执行文件 |
 | app_send_message | 在应用内搜索并发送消息 | 组合窗口/键鼠/输入，端到端完成 |
+| send_email | 发送邮件并自动回读核验 | SMTP 发信 + IMAP 回读发件箱『已发送』（可核验收件人收件箱『确实到达』），对外不可撤回、HIGH 确认门 |
 | browser_search | 结构化网络搜索 | 打开引擎→定位→输入→回车→读结果 |
 | browser_extract | 打开网页并提取内容 | 结构化读取正文/指定元素 |
 
@@ -629,6 +630,18 @@ skills.call("app_send_message", {
     "search_keyword": "我的手机",   # 演示目标默认发给自己（examples/qq_send_message_demo.py 默认值）
     "message": "你好",
 })
+
+# 组合技能：发送一封邮件（SMTP 发信 + 自动 IMAP 回读核验）。
+# 发信账号/授权码从 config.yaml 的 email 段读取，绝不进参数；skill 内部发完会回读
+# 发件箱『已发送』确认落库（配了 email.verify_inbox 再核验收件人收件箱『确实到达』），
+# 回读未命中如实报 found=False，不把没验到当成功。真机示例见 examples/email_demo.py。
+skills.call("send_email", {
+    "to": "someone@qq.com",
+    "subject": "来自小余人的测试信",
+    "body": "你好呀，小余人",
+    # "cc": "cc@qq.com",   # 可选抄送
+    "verify": True,        # 默认 True：发送后自动回读核验
+})
 ```
 
 ## 8.6 浏览器结构化控制示例
@@ -741,7 +754,7 @@ registry.call("browser_close", {})
 # 10. 运行测试
 
 ```bash
-# 运行所有测试（共 343 个）
+# 运行所有测试（共 370 个）
 python -m pytest tests/ -v
 
 # 运行单个测试文件
@@ -756,6 +769,7 @@ python -m pytest tests/test_conversation.py -v
 python -m pytest tests/test_llm_client.py -v
 python -m pytest tests/test_agent.py -v
 python -m pytest tests/test_agent_skills.py -v
+python -m pytest tests/test_email.py -v
 
 > 💡 运行搜索相关测试（`TestSearchModes`）会实时列出每个模式实际命中的搜索结果，例如：
 > ```
@@ -788,6 +802,7 @@ python -m pytest tests/test_agent_skills.py -v
 - **2026-09-06 Agent 可调组合技能接线**：把 SkillLibrary 的组合技能（QQ 搜索+发送 `app_send_message`）以 OpenAI function 暴露给真实 LLM，Agent 走 `_execute_skill` 分发并默认强制「屏幕 OCR 核对目标会话」门 + HIGH 确认门——模型不再退化成激活窗口/输字的零散原语，避免发错会话
 - **2026-09-06 Agent 截图理解 + 过程产物生命周期**：`qwen3.5-plus` 原生多模态（真机探测通过），开启 `supports_vision`；修掉"截图文件路径被当 base64"的坏图 bug，截图以真 base64 独立观测消息回传；新增 Agent 可调能力函数 **screen_inspect**（视觉模型直接看图 / 无视觉模型走项目内视觉桥 `core.vision_bridge`，读 config.yaml 的 `vision_bridge` 段——独立第二个视觉 API；不再依赖本机 ~/.claude 的外部 node 脚本，别人填 key 即用），GUI 成功/失败都自动补图；截图等过程产物单独存会话产物目录（可被下一技能复用），支持「清理截图/清理产物」与 `/reset` 联动清空，规范见 ADR 0009
 - **2026-09-06 视觉桥可移植化（项目内 vision_bridge + config.yaml.example）**：看屏幕/OCR 的默认视觉桥迁进项目内 `core/vision_bridge.py`——`llm.supports_vision` 决定用谁看图/OCR：主对话有视觉(true)直接用主模型读图（不必第二个 key）；主对话纯文本(false)走 config.yaml 顶层**独立 `vision_bridge` 段**（可与主对话不同 key/厂商，即"填两个 API"）。删掉 demo/文档里本机绝对路径（`C:\Users\34808\...\qwen-vision`），新增 `config.yaml.example` 模板（两种填法：单 key 有视觉主模型 / 双 key + 视觉桥）。外部 node 桥仅作显式 `vision_js`/`AGENT_VISION_JS` 的旧通道保留。全量测试 332→**343 全绿**
+- **2026-09-06 邮件全链路（自验证技能 send_email）**：新增 `core/email_client.py`（纯 stdlib：`smtplib`/`imaplib`/`email`，零新增依赖）+ Agent 白名单组合技能 **send_email**——SMTP 发信后自动 IMAP 回读发件箱『已发送』核验已落库；config.yaml 的 email 段配 `verify_inbox`（收件侧邮箱 IMAP）再轮询收件人收件箱核验『确实到达』（双端闭环），回读未命中如实报 found=False。授权码与 `llm.api_key` 同级敏感：只进 config/env、不入库（config.yaml.email 段入库留空、本地填回后不要再 commit）。**工具 57 不变、技能 24→25**；send_email 走 HIGH 确认门（对外发送、不可撤回）。新增 `examples/email_demo.py`（直驱技能 / `--agent` 真实 LLM 双模式 + 收尾独立 IMAP 核验）。单测全绿 343→**368**（新增 `tests/test_email.py` 25 例：fail-closed、协议层、技能编排、Agent 分发、Mock 对等）。**QQ 真机实跑**（2026-09-06）：主号发小号 `你好呀，小余人`，SMTP 接受、**到达核验命中（收件箱真收到）**；实跑暴露并修复 3 个协议层坑——QQ 投递改写 Message-ID、中文主题存 RFC2047 编码（→ 头解码后按主题兜底匹配）、发件箱名 `Sent Messages` 带空格需按 RFC3501 加引号；另发现 **QQ 授权码 SMTP 不在发件箱留副本** → 发件箱未命中≠没发，双端闭环下以收件箱到达核验为铁证。单测 **368→370**（test_email 25→27，+SELECT 引号、+RFC2047 主题命中 2 条回归）。证据 `docs/evidence/email_live_qq.md`
 
 ## 第4周计划
 - 工具签名验证（可选）
@@ -802,7 +817,7 @@ python -m pytest tests/test_agent_skills.py -v
 - **跨平台** — 兼容 Windows / Linux / macOS，使用 `pathlib` 统一路径处理，内置编码安全打印
 - **模块化** — 工具、技能、接口相互独立，新增工具只需注册无需改调用逻辑
 - **可扩展** — 支持动态注册/注销工具和技能
-- **可测试** — 343个单元测试覆盖核心功能，支持Mock测试和接口联调测试
+- **可测试** — 370个单元测试覆盖核心功能，支持Mock测试和接口联调测试
 - **可统计** — 内置调用次数、成功率、Top5排名等统计功能
 
 # 14. 跨平台兼容说明
@@ -811,7 +826,7 @@ python -m pytest tests/test_agent_skills.py -v
 
 | 系统 | 状态 | 说明 |
 |------|------|------|
-| Windows 11 | ✅ 通过 | 343个测试全部通过，Demo正常运行 |
+| Windows 11 | ✅ 通过 | 370个测试全部通过，Demo正常运行 |
 | Ubuntu/Linux | ✅ 兼容 | 使用 `pathlib` / `shutil` 等跨平台库，无需修改 |
 | macOS | ✅ 预期兼容 | 内部测试未进行，理论兼容 |
 

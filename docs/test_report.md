@@ -1,8 +1,8 @@
 # 第4组 单元测试报告
 
 > ⚠️ **历史快照**：本文档记录的是**第2周检查点**（2026-07-16，4 个测试文件 / 65 个用例）时的测试报告，
-> 仅作阶段性提交材料存档。当前代码已远超该状态：**13 个测试文件 / 343 个用例全部通过**
-> （新增 test_app_tools、test_agentic、test_mock、test_agent、test_agent_config、test_conversation、test_llm_client、test_model_switch、test_agent_skills、test_agent_vision 等），最新统计见
+> 仅作阶段性提交材料存档。当前代码已远超该状态：**14 个测试文件 / 370 个用例全部通过**
+> （新增 test_app_tools、test_agentic、test_mock、test_agent、test_agent_config、test_conversation、test_llm_client、test_model_switch、test_agent_skills、test_agent_vision、test_email 等），最新统计见
 > 《第4组项目进度跟踪.md》第五章与 README §10。
 >
 > 测试日期：2026-07-16

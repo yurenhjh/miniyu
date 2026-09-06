@@ -29,7 +29,7 @@ from core import safety
 #   1. 高层次——模型应该整段调用，而不是拆成激活窗口/点击/输入等零散原语；
 #   2. 参数全部可 JSON 序列化（Python 闭包等无法经 tool_call 传输，只能由技能内部构造）。
 # 其余技能（文件整理/删除/索引等）仍只供 ExecutionEngine / 上层代码直接调用，不暴露给模型，
-# 避免 24 个技能与 57 个底层工具大面积重叠、模型误选低层原语。
+# 避免 25 个技能与 57 个底层工具大面积重叠、模型误选低层原语。
 _AGENT_SKILL_SCHEMAS = {
     "app_send_message": {
         "description": (
@@ -61,6 +61,41 @@ _AGENT_SKILL_SCHEMAS = {
                 },
             },
             "required": ["search_keyword", "message"],
+        },
+    },
+    "send_email": {
+        "description": (
+            "发送一封电子邮件（SMTP），发出后自动用 IMAP 回读发件箱『已发送』核验已落库；"
+            "若 config.yaml 的 email 段配了 verify_inbox（收件侧邮箱的 IMAP），还会再轮询"
+            "收件人收件箱确认『确实到达』。对外可见、不可撤回的高危操作，执行前会请求用户确认。"
+            "发信账号与授权码从 config.yaml 的 email 段读取，不要把授权码放进参数。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "收件人邮箱地址（可多个，逗号分隔），必须与用户说的一致",
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "邮件主题",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "邮件正文（纯文本）",
+                },
+                "cc": {
+                    "type": "string",
+                    "description": "可选抄送邮箱（逗号分隔）",
+                },
+                "verify": {
+                    "type": "boolean",
+                    "description": "发送后是否自动 IMAP 回读核验（已发送/到达），默认开启；不要关闭",
+                    "default": True,
+                },
+            },
+            "required": ["to", "subject", "body"],
         },
     },
 }
@@ -229,6 +264,7 @@ class SkillLibrary:
         self.register("smart_organize", self.smart_organize)
         self.register("app_open", self.app_open)
         self.register("app_send_message", self.app_send_message)
+        self.register("send_email", self.send_email)
         self.register("browser_search", self.browser_search)
         self.register("browser_extract", self.browser_extract)
 
@@ -1384,3 +1420,82 @@ class SkillLibrary:
         text = b.read_text(selector=selector)
 
         return {"url": url, "selector": selector, "text": text[:2000]}
+
+    # =====================================================
+    # 邮件：发送 + 自动回读核验（组合型 Agent Skill）
+    # =====================================================
+
+    def send_email(self, to, subject, body, cc=None, verify=True):
+        """
+        发送一封邮件并自动回读核验（SMTP 发信 + IMAP 回读，组合型 Agent Skill）
+
+        编排流程：
+            1. 从 config.yaml 的 email 段读发件账号/授权码（没配好 → 报中文指引，不发）；
+            2. SMTP 发送（自动生成唯一 Message-ID 头）；
+            3. verify=True（默认）时用同一账号的 IMAP 回读发件箱『已发送』，确认该信确实
+               落库；若 email 段还配了 verify_inbox（收件侧邮箱的 IMAP），再轮询收件人
+               收件箱，核验『确实到达』（双端闭环）。回读未命中如实返回 found=False，
+               不把没验到当成功。
+
+        参数：
+            to:      收件人邮箱（可多个，逗号分隔）
+            subject: 邮件主题
+            body:    正文（纯文本）
+            cc:      可选抄送（逗号分隔）
+            verify:  是否发送后自动 IMAP 回读核验（默认 True；tool_call 无法携带闭包，
+                     技能内部自做核验，因此没有理由时建议保持开启）
+
+        返回：
+            {"to", "subject", "message_id", "smtp_accepted", "sent_verified",
+             "sent_verified_folder", "delivery_verified", ...}
+
+        说明：
+            - 发信账号与授权码从 config.yaml 的 email 段读取，绝不经 tool_call 参数暴露；
+            - 本技能风险分级 HIGH（对外发送、不可撤回），OSServiceAPI / run_skill_safely
+              会先走确认门；
+            - 依赖 core.email_client（纯 stdlib）：协议层任何失败抛 MailError 并带中文指引，
+              配置没配好会在"发之前"就报错，不会假装已发送。
+        """
+        from core import email_client
+        sec = email_client.email_section()
+
+        # 发信（内部 fail-closed：email 段没配好会在发之前就抛 MailError 指引）
+        sent = email_client.smtp_send(to=to, subject=subject, body=body, cc=cc, email_cfg=sec)
+
+        result = {
+            "to": sent["to"],
+            "cc": sent.get("cc", ""),
+            "subject": sent["subject"],
+            "message_id": sent["message_id"],
+            "smtp_accepted": True,
+        }
+
+        # 回读核验（只在发送成功后做；回读本身的失败如实记录，不把没验到当成功）
+        sent_verified = None
+        sent_folder = None
+        delivery_verified = None
+        if verify:
+            try:
+                sv = email_client.imap_verify_sent(
+                    msg_id=sent["message_id"], subject=sent["subject"], email_cfg=sec)
+                sent_verified = bool(sv.get("found"))
+                sent_folder = sv.get("folder")
+            except email_client.MailError as e:
+                sent_verified = False
+                result["verify_error"] = f"回读『已发送』失败：{e}"
+            # 双端闭环（可选）：email.verify_inbox 配了收件侧账号才核验"确实到达"
+            if ((sec.get("verify_inbox") or {}).get("username") or "").strip():
+                try:
+                    av = email_client.imap_verify_arrival(
+                        msg_id=sent["message_id"], subject=sent["subject"])
+                    delivery_verified = bool(av.get("found"))
+                except email_client.MailError as e:
+                    delivery_verified = False
+                    result["delivery_verify_error"] = f"回读收件人收件箱失败：{e}"
+
+        result.update({
+            "sent_verified": sent_verified,
+            "sent_verified_folder": sent_folder,
+            "delivery_verified": delivery_verified,
+        })
+        return result

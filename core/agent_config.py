@@ -26,6 +26,20 @@ DEFAULTS = {
         "confirm_high_risk": True,
         "history_window": 20,
     },
+    # 邮件（email）：SMTP 发送 + IMAP 回读核验（send_email 技能用）。默认值按 QQ 邮箱
+    # 填好，换服务商改 host/port/ssl 即可。username/auth_code 默认留空，由 config.yaml /
+    # 环境变量提供（授权码是敏感字段，不入库）。
+    "email": {
+        "smtp_host": "smtp.qq.com",
+        "smtp_port": 465,
+        "smtp_ssl": True,
+        "imap_host": "imap.qq.com",
+        "imap_port": 993,
+        "imap_ssl": True,
+        "username": "",
+        "auth_code": "",
+        "timeout": 20,
+    },
 }
 
 # 环境变量映射：AGENT_xxx → 配置路径
@@ -38,6 +52,15 @@ ENV_MAP = {
     "AGENT_MAX_STEPS": ("agent", "max_steps"),
     "AGENT_CONFIRM_HIGH_RISK": ("agent", "confirm_high_risk"),
     "AGENT_HISTORY_WINDOW": ("agent", "history_window"),
+    "AGENT_EMAIL_SMTP_HOST": ("email", "smtp_host"),
+    "AGENT_EMAIL_SMTP_PORT": ("email", "smtp_port"),
+    "AGENT_EMAIL_SMTP_SSL": ("email", "smtp_ssl"),
+    "AGENT_EMAIL_IMAP_HOST": ("email", "imap_host"),
+    "AGENT_EMAIL_IMAP_PORT": ("email", "imap_port"),
+    "AGENT_EMAIL_IMAP_SSL": ("email", "imap_ssl"),
+    "AGENT_EMAIL_USERNAME": ("email", "username"),
+    "AGENT_EMAIL_AUTH_CODE": ("email", "auth_code"),
+    "AGENT_EMAIL_TIMEOUT": ("email", "timeout"),
 }
 
 # 布尔值映射

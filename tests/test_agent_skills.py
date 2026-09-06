@@ -72,19 +72,22 @@ class _FakeApp:
 class TestAgentSkillExposure(unittest.TestCase):
     """白名单技能 → 模型可见的 OpenAI function"""
 
-    def test_whitelist_only_app_send_message(self):
+    def test_whitelist_app_send_message_and_send_email(self):
         sk = SkillLibrary()
-        self.assertEqual(sk.openai_skill_names(), ["app_send_message"])
+        self.assertEqual(sk.openai_skill_names(),
+                         ["app_send_message", "send_email"])
         self.assertTrue(sk.is_agent_skill("app_send_message"))
+        self.assertTrue(sk.is_agent_skill("send_email"))
         self.assertFalse(sk.is_agent_skill("system_info"))   # 非白名单不暴露
         self.assertFalse(sk.is_agent_skill("no_such_skill"))
 
     def test_openai_tool_schema_shape(self):
         sk = SkillLibrary()
         tools = sk.list_openai_tools()
-        self.assertEqual(len(tools), 1)
-        fn = tools[0]["function"]
-        self.assertEqual(fn["name"], "app_send_message")
+        self.assertEqual(len(tools), 2)
+        by_name = {t["function"]["name"]: t["function"] for t in tools}
+
+        fn = by_name["app_send_message"]
         self.assertIn("发送", fn["description"])
         params = fn["parameters"]
         self.assertEqual(params["type"], "object")
@@ -93,23 +96,37 @@ class TestAgentSkillExposure(unittest.TestCase):
         # 不能把 Python 闭包 verify 暴露给模型（JSON tool_call 传不了）
         self.assertNotIn("verify", params["properties"])
 
+        fn = by_name["send_email"]
+        self.assertIn("SMTP", fn["description"])
+        params = fn["parameters"]
+        self.assertEqual(params["required"], ["to", "subject", "body"])
+        self.assertIn("to", params["properties"])
+        # 授权码绝不该进模型可见的参数（从 config 读）
+        self.assertNotIn("auth_code", params["properties"])
+        # verify 是 bool（可 JSON 序列化）→ 可暴露；默认 True（别关回读核验）
+        self.assertIn("verify", params["properties"])
+        self.assertIs(params["properties"]["verify"].get("default"), True)
+
     def test_os_service_api_passthrough(self):
         api = OSServiceAPI()
-        self.assertEqual(api.openai_skill_names(), ["app_send_message"])
+        self.assertEqual(api.openai_skill_names(),
+                         ["app_send_message", "send_email"])
         self.assertTrue(api.is_agent_skill("app_send_message"))
+        self.assertTrue(api.is_agent_skill("send_email"))
         self.assertFalse(api.is_agent_skill("system_info"))
-        self.assertEqual(len(api.list_skills_openai()), 1)
+        self.assertEqual(len(api.list_skills_openai()), 2)
 
     def test_agent_toolset_includes_skill(self):
-        """模型拿到的是 57 个底层工具 + 白名单技能（总数 58）"""
+        """模型拿到的是 57 个底层工具 + 2 个白名单技能（总数 59）"""
         with tempfile.TemporaryDirectory(prefix="mini_ats_") as tmp:
             agent = Agent(config=_cfg(tmp))
             registry = agent.api.list_tools_openai()
             merged = registry + agent.api.list_skills_openai()
             names = [t["function"]["name"] for t in merged]
         self.assertEqual(len(registry), 57)                 # registry 本身不变
-        self.assertEqual(len(names), 58)
+        self.assertEqual(len(names), 59)
         self.assertIn("app_send_message", names)
+        self.assertIn("send_email", names)
 
     def test_system_prompt_steers_im_send(self):
         with tempfile.TemporaryDirectory(prefix="mini_ats_") as tmp:

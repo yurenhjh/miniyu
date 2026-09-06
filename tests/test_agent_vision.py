@@ -10,7 +10,8 @@ test_agent_vision.py
      没配好明确报错；
   3) 产物生命周期：截图落当前会话产物目录；用户说"清理截图/清理产物"直接清空；
      /reset 联动清空；本轮产生产物后最终回复附一句"可清理"提醒；
-  4) 模型可见函数全集 = 57 底层工具 + app_send_message + screen_inspect；
+  4) 模型可见函数全集 = 57 底层工具 + 白名单技能(app_send_message/send_email)
+     + screen_inspect；
   5) 统一视觉源 core.vision_bridge：按 llm.supports_vision 自动选源——主对话有视觉
      (true) → 直接用主对话模型看图（不必再配 vision_bridge）；纯文本(false) →
      用 config.yaml 的 vision_bridge 段（独立第二个视觉 API）。两源都没有 /
@@ -261,19 +262,20 @@ class TestScreenInspect(unittest.TestCase):
 
 
 class TestAgentVisionToolset(unittest.TestCase):
-    """模型可见函数全集 = 57 工具 + app_send_message + screen_inspect（共 59）"""
+    """模型可见函数全集 = 57 工具 + 2 白名单技能 + screen_inspect（共 60）"""
 
     def test_agent_toolset_has_screen_inspect(self):
         with tempfile.TemporaryDirectory(prefix="mini_st_") as storage:
             agent = Agent(config=_cfg(storage))
             tools = agent._agent_openai_tools()
             names = [t["function"]["name"] for t in tools]
-            self.assertEqual(len(tools), 59)
+            self.assertEqual(len(tools), 60)
             self.assertIn("screen_inspect", names)
             self.assertIn("app_send_message", names)
-            # screen_inspect 不是 SkillLibrary 技能（不改变 57/24 计数）
+            self.assertIn("send_email", names)
+            # screen_inspect 不是 SkillLibrary 技能（不改变 57/25 计数）
             self.assertFalse(agent.api.is_agent_skill("screen_inspect"))
-            self.assertEqual(len(agent.api.list_skills_openai()), 1)
+            self.assertEqual(len(agent.api.list_skills_openai()), 2)
 
 
 class TestProjectVisionBridge(unittest.TestCase):

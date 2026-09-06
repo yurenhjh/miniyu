@@ -185,7 +185,8 @@ class TestMockSkillLibrary(unittest.TestCase):
     def test_list_skills(self):
         """Mock技能列表"""
         skills = self.skills.list_skills()
-        self.assertEqual(len(skills), 24)
+        self.assertIn("send_email", skills)
+        self.assertEqual(len(skills), 25)
 
     def test_organize_downloads(self):
         """Mock整理下载目录"""

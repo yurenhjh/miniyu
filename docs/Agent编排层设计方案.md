@@ -4,7 +4,7 @@
 > 多步文件系统工具调用；证据见 `docs/evidence/agent_qwen_live.md`。本文保留设计思路与关键接口，实现中按实际做了调整。
 > 目标读者：本组自己 + 之后接手的 Claude 会话（开工前先读本文 + 文末"已落地决策"第 9 节）。
 > 背景：课程 = Agentic OS，核心题眼是"自然语言 → Agent 自动调 OS 工具"。现有底层已很扎实
-> （57 工具 / 24 技能 / 343 测试全过 / 真机 QQ·Edge·豆包 / Agent 可调组合技能 / 截图理解）；彼时缺一层 LLM 驱动的"脑"，由本层补齐
+> （57 工具 / 25 技能 / 370 测试全过 / 真机 QQ·Edge·豆包 / Agent 可调组合技能 / 截图理解 / 邮件全链路 send_email）；彼时缺一层 LLM 驱动的"脑"，由本层补齐
 > （后端 = 阿里云百炼 qwen3.5-plus，已真机验证）。
 > 多组联合怕被拖累 → 老师建议多做能自证完整的亮点，本层即为此做。
 
@@ -216,6 +216,7 @@ class Conversation:
 8. **组合技能暴露给模型（Agent 白名单，2026-09-06）**：SkillLibrary 的高层技能（如 `app_send_message`「QQ 搜索+发送」）以 **OpenAI function** 形式并入模型可见的 tools（`57 底层工具 + 白名单技能`）；`Agent._execute_one` 拆 `_execute_tool`/`_execute_skill` 两路，技能同样走 HIGH 确认门。因为 tool_call 无法携带 Python 闭包，技能本体提供 `verify_ocr=True` 让内部自动构造「屏幕 OCR 核对目标会话」门（`make_ocr_verify` → 裁剪聊天标题横带 → 项目内视觉桥 `core.vision_bridge`，读 config.yaml 的 `vision_bridge` 段；主对话有视觉则直接用主模型读图），找不到视觉源明确报错、绝不盲发；发送类技能在 Agent 分发时默认强制 OCR 门。配套单测 `tests/test_agent_skills.py`（不碰真 QQ / 真实视觉桥）。
 9. **Agent 截图理解 + 过程产物生命周期（2026-09-06，ADR 0009）**：视觉通道两路自适应——视觉模型（`supports_vision=True`，qwen3.5-plus 原生多模态已真机探测通过）截图以真 base64 独立观测消息回传；无视觉模型走项目内视觉桥（config.yaml 的 `vision_bridge` 段）转文字。修掉"截图路径被当 base64"坏图 bug；新增 Agent 自带能力函数 `screen_inspect(question)`（只读、无确认门，SYSTEM_PROMPT 规则 7 指导"不确定/出错先截图看"），GUI 成功/失败都自动补观测图。截图等过程产物单独存会话产物目录 `<artifacts_root>/<会话>`（`AGENT_ARTIFACTS_DIR` > `config.memory.artifacts_dir` > `%TEMP%\miniyu_artifacts`，可被下一技能复用）；用户说「清理截图/清理产物」或 `/reset` 联动清空；本轮产生产物时最终回复附一句提醒。配套单测 `tests/test_agent_vision.py`，测试 322 → **332 全绿**。
 10. **统一视觉源 + 可移植（2026-09-06，与决策 8/9 配套）**：看图/OCR 到底用谁，只由 `llm.supports_vision` 决定——`true`（主对话有视觉，如 qwen3.5-plus）→ 直接调主对话(llm)段读图，**不必配第二个 key**；`false`（主对话纯文本）→ 调 config.yaml 顶层 `vision_bridge` 段（独立第二个视觉 API，可与 llm 不同 key/厂商）。这统一收敛在新增的 `core/vision_bridge.py`（`require_vision` 校验 + `describe_image(image, question)` 自动选源），`make_ocr_verify` 与 `screen_inspect` 文字通道都经它。可移植性：删除 demo 里 `C:\Users\34808\...\qwen-vision` 本机绝对路径依赖，新增 `config.yaml.example` 模板（两种填法：单 key 有视觉主模型 / 双 key + 视觉桥）；外部 node 桥仅作显式 `vision_js`/`AGENT_VISION_JS` 的旧通道保留。两源都没配/失败 → `VisionBridgeError` 给配置指引，绝不瞎编。测试 **332 → 343 全绿**。
+11. **邮件能力 = 自验证技能 send_email（2026-09-06，决策 8 同形态的再落地）**：用户问能否补「微信和写邮件」后评估：微信真号自动化封号风险不可逆、不做；邮件走 SMTP/IMAP 全链路。做成 **1 个白名单组合技能**（不是加底层工具——工具 57 不变、技能 24→25）：新增纯 stdlib 协议层 `core/email_client.py`（`smtp_send` / `imap_verify_sent` / 可选 `imap_verify_arrival`；连接拆 `_connect_smtp/_connect_imap` 内部缝隙、patch 即可单测、不真联网）。skill 内部完成「发 → IMAP 回读发件箱『已发送』 →（配 verify_inbox 时）轮询收件人收件箱『确实到达』」的**自验证闭环**，回读未命中如实报 found=False、不把没验到当成功；email 段没配好（缺 username/auth_code）在『发之前』抛 `MailError` 中文指引（fail-closed）；授权码同 `llm.api_key` 同级敏感，只进 config/env、不入库。配套 `tests/test_email.py` 25 例、全量 **343 → 368 全绿**；`examples/email_demo.py`（直驱技能 / `--agent` 真实 LLM）。**QQ 真机实跑（2026-09-06）**修正三处协议层假设并补 2 条回归：①QQ 投递改写 Message-ID（`<…@miniyu.local>` → `<tencent_…@qq.com>`）②中文主题在存储头里是 RFC2047 编码 → `_folder_search_ids` 改为解码头字段后按主题兜底匹配 ③『已发送』文件夹实为带空格的 `Sent Messages`（非 `&XfJT0ZAB-`），imaplib 不加引号直接 EXAMINE 会 BAD → 按 RFC3501 加引号；另发现 **QQ 授权码 SMTP 不在发件箱留副本** → 发件箱未命中≠没发，双端闭环下以收件箱到达核验为铁证（163/Gmail 等留副本仍可查）。测试 **368 → 370 全绿**（test_email 25→27）；证据 `docs/evidence/email_live_qq.md`。
 
 ---
 

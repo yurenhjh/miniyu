@@ -62,3 +62,26 @@ memory:
   summarize_threshold: 0.8
   # 可选：截图等过程产物目录（不写则用系统临时目录 %TEMP%\miniyu_artifacts）
   # artifacts_dir: ""
+
+# ============================================================
+# 邮件（email）—— send_email 技能用：SMTP 发送 + IMAP 回读核验
+# ============================================================
+# 授权码是敏感字段（同 llm.api_key）：本地填、不要 commit / 分享；模板留空。
+# QQ 邮箱在『设置 → 账户 → 开启 SMTP/IMAP 服务』生成"授权码"（不是登录密码），
+# 开服务后 SMTP 和 IMAP 共用这一把。换 163：smtp.163.com / imap.163.com；其它服务商按需改。
+# 可选"双端闭环"（核验邮件确实到达收件人收件箱）：下面 verify_inbox 填收件侧邮箱的 IMAP。
+email:
+  smtp_host: "smtp.qq.com"
+  smtp_port: 465            # QQ 走 SSL 465；163 也是 465
+  smtp_ssl: true
+  imap_host: "imap.qq.com"
+  imap_port: 993
+  imap_ssl: true
+  username: ""              # ← 发件账号（邮箱全址），如 xxxx@qq.com
+  auth_code: ""             # ← SMTP/IMAP 授权码（敏感，入库留空）
+  timeout: 20
+  # verify_inbox:           # ← 可选：收件侧邮箱的 IMAP（核验"确实到达"）
+  #   imap_host: "imap.qq.com"
+  #   imap_port: 993
+  #   username: ""          # ← 收件侧账号，如你的小号
+  #   auth_code: ""

@@ -32,6 +32,7 @@ class MockSkillLibrary:
             "smart_organize",
             "app_open",
             "app_send_message",
+            "send_email",
             "browser_search",
             "browser_extract"
         ]
@@ -153,10 +154,22 @@ class MockSkillLibrary:
             "screenshot": "[MOCK] /tmp/mock_screenshot.png",
         }
 
+    def send_email(self, to, subject, body, cc=None, verify=True):
+        return {
+            "to": to,
+            "subject": subject,
+            "cc": cc or "",
+            "message_id": "[MOCK] <miniyu-mock@example.local>",
+            "smtp_accepted": True,
+            "sent_verified": True,
+            "sent_verified_folder": "[MOCK] 已发送",
+            "delivery_verified": True,
+        }
+
     # ---- Agent 白名单技能（与正式版 SkillLibrary 接口对齐） ----
 
     # 与 core.skill_library._AGENT_SKILL_SCHEMAS 同源的白名单名（mock 只保证名字/形状）
-    _AGENT_WHITELIST = ("app_send_message",)
+    _AGENT_WHITELIST = ("app_send_message", "send_email")
 
     def openai_skill_names(self):
         return [n for n in self._AGENT_WHITELIST if n in self.list_skills()]
@@ -168,21 +181,37 @@ class MockSkillLibrary:
         """返回 mock 白名单技能的 OpenAI function 描述（形状与正式版一致）"""
         out = []
         for name in self.openai_skill_names():
+            if name == "send_email":
+                desc = "[MOCK] send_email：发送邮件（SMTP + 自动 IMAP 回读核验）"
+                params = {
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string"},
+                        "subject": {"type": "string"},
+                        "body": {"type": "string"},
+                        "cc": {"type": "string"},
+                        "verify": {"type": "boolean", "default": True},
+                    },
+                    "required": ["to", "subject", "body"],
+                }
+            else:
+                desc = "[MOCK] app_send_message：在 IM 应用内搜索会话并发送消息（含 OCR 核对）"
+                params = {
+                    "type": "object",
+                    "properties": {
+                        "app_name": {"type": "string", "default": "QQ"},
+                        "search_keyword": {"type": "string"},
+                        "message": {"type": "string"},
+                        "verify_ocr": {"type": "boolean", "default": True},
+                    },
+                    "required": ["search_keyword", "message"],
+                }
             out.append({
                 "type": "function",
                 "function": {
                     "name": name,
-                    "description": f"[MOCK] {name}：在 IM 应用内搜索会话并发送消息（含 OCR 核对）",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "app_name": {"type": "string", "default": "QQ"},
-                            "search_keyword": {"type": "string"},
-                            "message": {"type": "string"},
-                            "verify_ocr": {"type": "boolean", "default": True},
-                        },
-                        "required": ["search_keyword", "message"],
-                    },
+                    "description": desc,
+                    "parameters": params,
                 },
             })
         return out
