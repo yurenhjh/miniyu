@@ -270,13 +270,22 @@ HTML = r"""<!DOCTYPE html>
 	    --code-bg: rgba(15, 52, 96, 0.08);
 	  }
 	  * { margin: 0; padding: 0; box-sizing: border-box; }
-	  body {
-	    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-	    background: var(--bg);
-	    color: var(--text);
-	    height: 100vh;
-	    display: flex;
-	  }
+  /* 整体布局锁定：html/body 不滚动不横向溢出，页面固定于视口内，
+     滚动只发生在 .chat-container 内部（防整个界面被划出用户窗口） */
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    overflow: hidden;
+  }
 	  /* 侧边栏 */
 	  .sidebar {
 	    width: var(--sidebar-width);
@@ -386,6 +395,7 @@ HTML = r"""<!DOCTYPE html>
 	    display: flex;
 	    flex-direction: column;
 	    min-width: 0;
+	    overflow: hidden;
 	  }
 	  .header {
 	    background: var(--surface);
@@ -557,6 +567,7 @@ HTML = r"""<!DOCTYPE html>
 	  .chat-container {
 	    flex: 1;
 	    overflow-y: auto;
+	    overflow-x: hidden;
 	    padding: 20px 24px;
 	    display: flex;
 	    flex-direction: column;
@@ -777,6 +788,65 @@ HTML = r"""<!DOCTYPE html>
                 word-break: break-word;
               }
               .message.thinking.collapsed .thinking-content { display: none; }
+              /* 工具调用面板：默认折叠为一行标题；点标题展开/再点收起；
+                 展开后内容限高固定，超出部分在框内滑动查看（仿深度思考面板） */
+              .message.tools {
+                max-width: 92%;
+                align-self: flex-start;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-left: 3px solid #8b5cf6;
+                border-radius: 8px;
+                padding: 0;
+                width: 100%;
+              }
+              .tools-header {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 8px 12px;
+                cursor: pointer;
+                user-select: none;
+                font-size: 13px;
+                color: var(--text-secondary);
+                border-radius: 8px;
+              }
+              .tools-header:hover { background: var(--hover-bg); }
+              .tools-label { font-weight: 600; color: #8b5cf6; }
+              .tools-count { font-size: 12px; opacity: 0.85; }
+              .tools-toggle {
+                margin-left: auto;
+                font-size: 10px;
+                transition: transform 0.2s ease;
+                color: var(--text-secondary);
+              }
+              .message.tools:not(.collapsed) .tools-toggle { transform: rotate(180deg); }
+              .tools-content {
+                max-height: 260px;   /* 展开后最大显示高度，超出可滑动 */
+                overflow-y: auto;
+                padding: 0 12px 10px;
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+              }
+              .message.tools.collapsed .tools-content { display: none; }
+              .tool-row {
+                font-size: 12px;
+                line-height: 1.5;
+                background: var(--hover-bg);
+                border-radius: 6px;
+                padding: 6px 10px;
+                word-break: break-all;
+              }
+              .tool-row-name { font-weight: 600; color: var(--text); }
+              .tool-row-args {
+                font-family: Consolas, Monaco, 'Courier New', monospace;
+                color: var(--text-secondary);
+                white-space: pre-wrap;
+                word-break: break-all;
+                display: block;
+                margin-top: 2px;
+              }
               .modal-overlay {
 	    display: none;
 	    position: fixed;
@@ -1255,6 +1325,7 @@ function connectEvents(taskId) {
   closeEvents();
   render = { thinkingStart: null, thinkingEl: null, thinkingContent: null,
              thinkingTimeEl: null, thinkingLabelEl: null, thinkingDone: false,
+             toolPanel: null, toolContent: null, toolCountEl: null, toolCount: 0,
              answerEl: null, finished: false };
   const es = new EventSource('/task/' + taskId + '/events');
   eventSource = es;
@@ -1353,18 +1424,52 @@ function handleToken(delta) {
   scrollToBottom();
 }
 
-// 工具调用：显示执行步骤行（参数超长截断）
+// 工具调用：折叠面板（仿深度思考）。同一轮内多次调用归入同一面板，
+// 默认折叠为一行标题；点标题展开/收起；展开后内容限高、超出在框内滑动查看。
 function handleToolCall(tool, args) {
-  let s = '🛠 ' + tool;
-  if (args && Object.keys(args).length) {
-    let a = JSON.stringify(args);
-    if (a.length > 100) a = a.slice(0, 100) + '…';
-    s += '  ' + a;
+  if (!render.toolPanel) {
+    completeThinking();  // 模型已决定调用工具 → 思考阶段收尾
+    const panel = document.createElement('div');
+    panel.className = 'message tools collapsed';  // 初始折叠
+    const header = document.createElement('div');
+    header.className = 'tools-header';
+    const label = document.createElement('span');
+    label.className = 'tools-label';
+    label.textContent = '工具调用';
+    const count = document.createElement('span');
+    count.className = 'tools-count';
+    const toggle = document.createElement('span');
+    toggle.className = 'tools-toggle';
+    toggle.textContent = '▼';
+    header.appendChild(label);
+    header.appendChild(count);
+    header.appendChild(toggle);
+    header.onclick = function () { panel.classList.toggle('collapsed'); };
+    const content = document.createElement('div');
+    content.className = 'tools-content';
+    panel.appendChild(header);
+    panel.appendChild(content);
+    document.getElementById('chat').appendChild(panel);
+    render.toolPanel = panel;
+    render.toolContent = content;
+    render.toolCountEl = count;
+    render.toolCount = 0;
   }
-  const line = document.createElement('div');
-  line.className = 'message tool-line';
-  line.textContent = s;
-  document.getElementById('chat').appendChild(line);
+  render.toolCount++;
+  render.toolCountEl.textContent = '(' + render.toolCount + ' 个)';
+  const row = document.createElement('div');
+  row.className = 'tool-row';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'tool-row-name';
+  nameEl.textContent = '🛠 ' + tool;
+  row.appendChild(nameEl);
+  if (args && Object.keys(args).length) {
+    const argsEl = document.createElement('span');
+    argsEl.className = 'tool-row-args';
+    argsEl.textContent = JSON.stringify(args);
+    row.appendChild(argsEl);
+  }
+  render.toolContent.appendChild(row);
   scrollToBottom();
 }
 

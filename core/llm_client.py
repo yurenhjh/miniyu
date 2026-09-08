@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -502,17 +503,34 @@ class OpenAICompatibleClient(LLMClient):
         #   _tools_param_rejected  — 模型不支持 tools 参数（如 deepseek-r1-distill），改走文本协议
         #   _tool_history_rejected — 历史中的 tool_calls/tool 消息被 API 拒收，之后自动清理
         #   _server_search_rejected — 百炼 enable_search 被拒（如切到不支持的模型），停用服务端搜索
+        #   _code_interpreter_rejected — 百炼 code_interpreter 被拒（模型不支持），停用服务端解释器
+        #   _thinking_rejected — 百炼 enable_thinking 被拒，仅丢弃思考参数（保留解释器）
         self._tools_param_rejected = False
         self._tool_history_rejected = False
         # 百炼服务端工具开关（create_llm_client 按顶层 web_search.enabled 预置；云端执行、无本地实现）
         self.server_tools = server_tools or {}
         self._server_search_rejected = False
+        self._code_interpreter_rejected = False
+        self._thinking_rejected = False
+        # 连接池复用（延迟优化）：requests.Session 复用底层 TCP/TLS 连接，每次请求省
+        # 50-200ms 握手；Session 非线程安全 → 按线程隔离（Web 端后台多线程流式）
+        self._session_local = threading.local()
+
+    def _session(self) -> requests.Session:
+        """当前线程的 requests.Session（HTTP keep-alive 连接池）"""
+        s = getattr(self._session_local, "s", None)
+        if s is None:
+            s = requests.Session()
+            self._session_local.s = s
+        return s
 
     def reset_runtime_flags(self):
         """重置工具能力探测标志（热切换模型后调用，新模型能力需重新探测）"""
         self._tools_param_rejected = False
         self._tool_history_rejected = False
         self._server_search_rejected = False
+        self._code_interpreter_rejected = False
+        self._thinking_rejected = False
 
     @property
     def is_bailian(self) -> bool:
@@ -526,15 +544,57 @@ class OpenAICompatibleClient(LLMClient):
                 and self.is_bailian
                 and not self._server_search_rejected)
 
-    def _apply_server_tools(self, body: dict) -> None:
+    @property
+    def server_code_interpreter_active(self) -> bool:
+        """服务端代码解释器是否生效（配置开启 + 百炼端点 + 未被 API 拒绝）。
+
+        百炼官方：Chat Completions 通过 tools 里的 {"type": "code_interpreter"} 启用，
+        模型在云端沙箱里写并运行 Python 解决数学计算/数据分析；建议与 enable_thinking
+        配合（复杂问题先思考再执行）。仅 Plus/Max 推荐模型支持，被拒时自适应停用。
+        """
+        return (bool(self.server_tools.get("code_interpreter"))
+                and self.is_bailian
+                and not self._code_interpreter_rejected)
+
+    def _code_interpreter_rejected_by(self, detail_l: str) -> bool:
+        """判断 400 是否因 code_interpreter 被拒（模型不支持/与请求约束冲突）。
+
+        实测（examples/probe_bailian_code_interpreter.py + 百炼官方文档）：
+        - 模型不支持：错误文本含 "code_interpreter"
+        - 与本地函数工具混用：API 返回 "Agent mode does not support tools"
+          （agent 模式禁本地工具，因此解释器只在无本地工具回合注入）
+        - 非流式调用："Non-streaming mode does not support Code interpreter"
+          （解释器仅支持流式）
+        """
+        if not self.server_code_interpreter_active:
+            return False
+        if "code_interpreter" in detail_l:
+            return True
+        if "agent mode does not support tools" in detail_l:
+            return True
+        if "non-streaming mode does not support" in detail_l:
+            return True
+        return False
+
+    def _apply_server_tools(self, body: dict, tools: list = None,
+                            stream: bool = False) -> None:
         """把百炼服务端工具开关注入请求体（云端透明执行，无 tool_calls 往返）。
 
-        实测依据（examples/probe_bailian_search.py）：enable_search 与本地函数工具
-        同请求混用无冲突、多轮工具历史正常；被 API 拒绝时由 chat()/chat_stream()
-        的 400 分支置 _server_search_rejected 自适应停用。
+        实测依据（examples/probe_bailian_search.py + probe_bailian_code_interpreter.py）：
+        - enable_search 与本地函数工具同请求混用无冲突；
+        - enable_code_interpreter 在 Chat Completions 模式是顶层布尔参数
+          （tools 里的 {"type": "code_interpreter"} 是 Responses API 写法，本端点会
+          400 "'function' is a required property"），且仅支持流式调用、不能与本地
+          函数工具同请求（"Agent mode does not support tools"）。
+          因此解释器只在 stream=True 且本请求未带本地工具（纯计算/纯对话回合）时注入。
         """
         if self.server_web_search_active:
             body["enable_search"] = True
+        if self.server_code_interpreter_active and stream and not tools:
+            body["enable_code_interpreter"] = True
+            # 官方文档：代码解释器功能仅支持思考模式调用
+            if not self._thinking_rejected:
+                body["enable_thinking"] = True
 
     @staticmethod
     def _has_tool_messages(messages: list[dict]) -> bool:
@@ -621,8 +681,9 @@ class OpenAICompatibleClient(LLMClient):
             body["tools"] = tools
             body["tool_choice"] = "auto"
 
-        # 百炼服务端工具（enable_search 等，云端透明执行）
-        self._apply_server_tools(body)
+        # 百炼服务端工具（enable_search / code_interpreter 等，云端透明执行）
+        # 非流式：code_interpreter 仅支持流式调用，故不注入（stream 默认 False）
+        self._apply_server_tools(body, tools)
 
         try:
             resp = requests.post(
@@ -691,6 +752,22 @@ class OpenAICompatibleClient(LLMClient):
                 ):
                     self._server_search_rejected = True
                     _logger.info(f"模型 {self.model} 拒绝 enable_search，停用服务端联网搜索")
+                    return self.chat(messages, tools=tools)
+                # ④ code_interpreter / enable_thinking 被拒（模型不支持服务端代码解释器）：
+                #    停注后重试；agent 层据 server_code_interpreter_active=False 不再注入
+                if self._code_interpreter_rejected_by(detail_l):
+                    self._code_interpreter_rejected = True
+                    _logger.info(f"模型 {self.model} 拒绝 code_interpreter，停用服务端代码解释器")
+                    return self.chat(messages, tools=tools)
+                if body.get("enable_thinking") and "enable_thinking" in detail_l:
+                    # 只丢弃 enable_thinking，保留 code_interpreter（官方建议非必需）；
+                    # 但解释器仅支持思考模式 → 思考被拒时解释器一并停用
+                    self._thinking_rejected = True
+                    if self.server_code_interpreter_active:
+                        self._code_interpreter_rejected = True
+                        _logger.info(f"模型 {self.model} 拒绝 enable_thinking，停用思考参数并停用代码解释器")
+                    else:
+                        _logger.info(f"模型 {self.model} 拒绝 enable_thinking，仅丢弃思考参数")
                     return self.chat(messages, tools=tools)
 
             # 匹配已知错误码
@@ -981,8 +1058,9 @@ class OpenAICompatibleClient(LLMClient):
             body["tools"] = tools
             body["tool_choice"] = "auto"
 
-        # 百炼服务端工具（enable_search 等，云端透明执行）
-        self._apply_server_tools(body)
+        # 百炼服务端工具（enable_search / code_interpreter 等，云端透明执行）
+        # 流式：code_interpreter 仅支持流式 + 无本地工具回合（stream=True）
+        self._apply_server_tools(body, tools, stream=True)
 
         try:
             resp = requests.post(
@@ -1167,6 +1245,20 @@ class OpenAICompatibleClient(LLMClient):
             self._server_search_rejected = True
             _logger.info(f"模型 {self.model} 拒绝 enable_search，流式停用服务端联网搜索")
             return self.chat_stream(messages, tools=tools)
+        # ④ code_interpreter / enable_thinking 被拒 → 停注后流式重试
+        if self._code_interpreter_rejected_by(detail_l):
+            self._code_interpreter_rejected = True
+            _logger.info(f"模型 {self.model} 拒绝 code_interpreter，流式停用服务端代码解释器")
+            return self.chat_stream(messages, tools=tools)
+        if "enable_thinking" in detail_l:
+            self._thinking_rejected = True
+            if self.server_code_interpreter_active:
+                # 解释器仅支持思考模式 → 思考被拒时解释器一并停用
+                self._code_interpreter_rejected = True
+                _logger.info(f"模型 {self.model} 拒绝 enable_thinking，流式停用思考参数并停用代码解释器")
+            else:
+                _logger.info(f"模型 {self.model} 拒绝 enable_thinking，流式仅丢弃思考参数")
+            return self.chat_stream(messages, tools=tools)
         return None
 
     def _handle_http_error(self, e: requests.exceptions.HTTPError) -> ChatResponse:
@@ -1274,6 +1366,13 @@ class FailoverClient(LLMClient):
         if self._degraded or self._force_local:
             return False
         return getattr(self.primary, "server_web_search_active", False)
+
+    @property
+    def server_code_interpreter_active(self) -> bool:
+        """服务端代码解释器跟随主 LLM（备用端点通常是本地 Ollama，无此能力）"""
+        if self._degraded or self._force_local:
+            return False
+        return getattr(self.primary, "server_code_interpreter_active", False)
 
     @property
     def tool_free_active(self) -> bool:
@@ -1465,13 +1564,17 @@ def create_llm_client(config: dict) -> LLMClient:
     provider = llm_cfg.get("provider", "deterministic")
 
     # 联网搜索总开关（顶层 web_search.enabled，默认开）→ 转成主 LLM 的服务端工具配置；
-    # 仅百炼端点实际生效（OpenAICompatibleClient.is_bailian 检查），fallback 客户端不带
+    # 仅百炼端点实际生效（OpenAICompatibleClient.is_bailian 检查），fallback 客户端不带。
+    # code_interpreter（服务端代码解释器，web_search.code_interpreter，默认开）：
+    #   云端沙箱里写并运行 Python 解数学/数据分析，官方建议与 web_search 同时开启。
     web_search_on = bool(config.get("web_search", {}).get("enabled", True))
+    code_interpreter_on = bool(config.get("web_search", {}).get("code_interpreter", True))
     if isinstance(llm_cfg, dict):
         llm_cfg = dict(llm_cfg)
     else:
         llm_cfg = {}
-    llm_cfg["server_tools"] = {"web_search": web_search_on}
+    llm_cfg["server_tools"] = {"web_search": web_search_on,
+                               "code_interpreter": code_interpreter_on}
 
     # 检查是否有 fallback 配置
     fallback_cfg = llm_cfg.get("fallback", {})

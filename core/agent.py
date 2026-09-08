@@ -115,6 +115,35 @@ _OFFLINE_HINT = (
     "建议开启联网开关后再问，不要编造实时数据。"
 )
 
+# 百炼服务端代码解释器生效时追加到 system prompt：
+# 云端沙箱会透明执行 Python（数学计算/数据分析）。注意百炼约束（官方文档 + 实测
+# probe_bailian_code_interpreter.py）：解释器仅支持流式、且不能与本地函数工具同请求
+# （"Agent mode does not support tools"）——因此只在"纯计算/纯对话"回合以 tools=None
+# 走解释器，涉及本地资源的提问仍用本地工具，解释器自动让位。
+_CODE_INTERPRETER_HINT = (
+    "\n补充（计算能力已升级）：你已内置服务端代码解释器，当用户只要求纯计算/数据分析"
+    "（数学题、大数运算、统计、公式推导验证，不涉及本地文件/系统操作）时，系统会以纯计算"
+    "模式调用，在云端沙箱运行 Python 并返回精确结果，你直接给出结论即可，不必用 run_command"
+    "调本地 Python。注意：需要本地文件、目录、系统操作时照常调用本地工具，不要因为解释器"
+    "而跳过。"
+)
+
+# 纯计算/数据分析回合判定（配合百炼 code_interpreter 使用）：
+# 命中计算关键词、且不涉及本地资源/系统操作时，该回合以 tools=None 走服务端解释器；
+# 关键词命中保守（宁缺毋滥），避免把需要本地工具的任务误判成纯计算。
+_PURE_CALC_RE = re.compile(
+    r"计算|算一?下|算算|多少|次方|等于|数学|统计|求和|求值|平均值|中位数|众数|"
+    r"概率|换算|平方根|开方|质数|因数|阶乘|等差数列|等比数列|圆周率|π|方程式?|"
+    r"解方程|列竖式|笔算",
+    re.IGNORECASE,
+)
+_LOCAL_REF_RE = re.compile(
+    r"目录|文件夹|文件|桌面|截图|屏幕|打开|启动|运行|安装|发送|邮件|qq|微信|"
+    r"浏览器|删除|复制|移动|重命名|进程|窗口|关闭|停止|结束|天气|新闻|股票|"
+    r"网页|网址|链接|照片|图片|视频|音频|下载|上传|打印",
+    re.IGNORECASE,
+)
+
 
 # Agent 视觉能力函数（"截图理解"）：让模型在不确定 / 复杂 / 出错时主动看一眼屏幕。
 # 它不属于 SkillLibrary（不改变 57 工具 / 25 技能计数），而是 Agent 自带的可调函数：
@@ -279,6 +308,9 @@ class Agent:
         # confirm_high_risk 保留为旧字段兼容别名（其值并入 resolve 判定）。
         self.authz_level = resolve_authz_level(agent_cfg)
         self.window_size = agent_cfg.get("history_window", 20)
+        # 工具结果回传 LLM 的最大字符数（token 优化：run_command 输出/文件内容可能巨大，
+        # 全量回传既费 token 又拖慢请求；超出截断并附说明，模型可再针对性读取）
+        self.tool_result_max_chars = int(agent_cfg.get("tool_result_max_chars", 4000))
 
         # 记忆压缩（对标 AutoGPT 的上下文窗口管理）
         self.auto_summarize = memory_cfg.get("auto_summarize", False)
@@ -498,6 +530,7 @@ class Agent:
                         tool_call_id=call_id,
                         name=name,
                         content=result,
+                        max_chars=self.tool_result_max_chars,
                     )
 
                     # screen_inspect 原生视觉分支：tool 结果之后把截图补成观测消息（顺序满足 API 配对要求）
@@ -584,6 +617,15 @@ class Agent:
         # 纯对话模式（本地小模型）：跳过规划层，不传工具
         chat_mode = self._chat_mode()
         openai_tools = self._agent_openai_tools()
+        # 纯计算回合：百炼 code_interpreter 不与本地函数工具同请求（"Agent mode does
+        # not support tools"）→ 该回合以 tools=None 走服务端解释器（云端沙箱跑 Python）；
+        # 命中计算关键词且不涉及本地资源才触发，避免误判。
+        code_interpreter_turn = (
+            not chat_mode
+            and getattr(self.llm, "server_code_interpreter_active", False)
+            and bool(_PURE_CALC_RE.search(user_input))
+            and not _LOCAL_REF_RE.search(user_input)
+        )
 
         for step in range(1, self.max_steps + 1):
             # 轮次间隙也检查打断（长时间工具执行后进入下一轮 LLM 调用前）
@@ -595,7 +637,7 @@ class Agent:
 
             llm_stream = self.llm.chat_stream(
                 messages,
-                tools=None if chat_mode else (
+                tools=None if (chat_mode or (code_interpreter_turn and step == 1)) else (
                     self._visible_tools(openai_tools) if self.llm.provider in ("openai_compatible", "failover") else None
                 ),
             )
@@ -744,6 +786,8 @@ class Agent:
                 system += _OFFLINE_HINT
             elif getattr(self.llm, "server_web_search_active", False):
                 system += _SERVER_SEARCH_HINT
+            if getattr(self.llm, "server_code_interpreter_active", False):
+                system += _CODE_INTERPRETER_HINT
             return [{"role": "system", "content": system}] + messages
         return messages
 

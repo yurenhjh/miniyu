@@ -71,13 +71,25 @@ class Conversation:
         self.messages.append(msg)
         self.updated_at = time.time()
 
-    def add_tool_result(self, tool_call_id: str, name: str, content: dict):
-        """添加工具执行结果"""
+    def add_tool_result(self, tool_call_id: str, name: str, content: dict,
+                        max_chars: int = 4000):
+        """添加工具执行结果。
+
+        超长自动截断（token 优化，对标 LangGraph 社区 TOOL_OUTPUT_MAX_TOKENS 实践）：
+        run_command 输出 / 文件内容可能动辄几 K 到几十 K 字符，全量回传给 LLM
+        既费 token 又拖慢请求；截断到 max_chars 字符并附说明，模型仍能拿到关键结论。
+        """
+        text = json.dumps(content, ensure_ascii=False)
+        if max_chars > 0 and len(text) > max_chars:
+            text = text[:max_chars] + (
+                f"\n...[结果过长已截断，仅保留前 {max_chars} 字符；"
+                f"如需要可说明想看哪部分，再针对性读取]"
+            )
         self.messages.append({
             "role": "tool",
             "tool_call_id": tool_call_id,
             "name": name,
-            "content": json.dumps(content, ensure_ascii=False),
+            "content": text,
         })
         self.updated_at = time.time()
 

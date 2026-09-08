@@ -87,6 +87,8 @@ vision_bridge:
 
 agent:
   max_steps: 15
+  # 工具结果回传 LLM 的最大字符数（省 token：超出截断，模型需要时再针对性读取；0=不截断）
+  tool_result_max_chars: 4000
   confirm_high_risk: true
   # 授权档位：base=基础授权(全部高危需确认，现状) / advanced=高级授权(仅永久删除文件需确认)
   #          / full=全自动(从不确认，含删除)。authorization 优先于上面的 confirm_high_risk（旧字段兼容）
