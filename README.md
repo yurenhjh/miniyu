@@ -198,7 +198,7 @@ miniyu 是第4组独立实现的 AI 桌面助手，通过 LLM 驱动的 Agent �
 | 界面 | 文件 | 说明 |
 |------|------|------|
 | **终端界面（CLI）** | `examples/agent_cli.py` | 零依赖，任何机器都能跑，miniyu 品牌提示符 |
-| **Web 桌面客户端** | `examples/miniyu_web.py` | Flask + 深色主题，高危操作弹模态框确认；顶栏可切换授权档位（基础 / 高级 / 全自动） |
+| **Web 桌面客户端** | `examples/miniyu_web.py` | Flask + 深色主题，高危操作弹模态框确认；顶栏可切换授权档位（基础 / 高级 / 全自动）；**可搜索模型下拉框**：在线模型点选即热切换（先实测连通），本地 Ollama 模型点选即切离线模式 |
 
 ### 架构
 
@@ -209,8 +209,10 @@ miniyu 是第4组独立实现的 AI 桌面助手，通过 LLM 驱动的 Agent �
     ↓
  Agent（ReAct 循环）
     ├── LLMClient（抽象基类）
-    │   ├── DeterministicBrain（离线脑，规则匹配，零依赖，默认）
-    │   └── OpenAICompatibleClient（真实 LLM，兼容 GPT/DeepSeek/豆包/Ollama 等）
+    │   ├── DeterministicBrain（离线脑，规则匹配，零依赖，默认兜底）
+    │   ├── OpenAICompatibleClient（真实 LLM，兼容 GPT/DeepSeek/豆包/Ollama 等）
+    │   └── FailoverClient（自动降级：主 API → 本地 Ollama → 确定性脑；
+    │       支持运行时热切换模型 + force_local 手动本地模式）
     ↓
  OSServiceAPI（57 个工具 + 26 个技能）
     ↓
@@ -225,7 +227,8 @@ miniyu 是第4组独立实现的 AI 桌面助手，通过 LLM 驱动的 Agent �
 | 对话记忆 | `core/conversation.py` | 滑动窗口，支持多模态（图片） |
 | 离线脑 | `core/llm_client.py` → `DeterministicBrain` | 关键词匹配 20+ 意图，零依赖 |
 | 真实 LLM | `core/llm_client.py` → `OpenAICompatibleClient` | 兼容 OpenAI 格式，支持视觉模型 |
-| ReAct 循环 | `core/agent.py` → `Agent` | 安全确认门、最大步数保护、GUI 截图回传 |
+| 自动降级 | `core/llm_client.py` → `FailoverClient` | 主 API 失败自动切本地 Ollama（5 分钟重试恢复）；`force_local_mode()` 手动切纯本地模式 |
+| ReAct 循环 | `core/agent.py` → `Agent` | 安全确认门、最大步数保护、GUI 截图回传；换模型自动清理历史中的工具调用消息（跨模型无缝接力） |
 | CLI 入口 | `examples/agent_cli.py` | 交互式对话，支持 /help /reset /tools 等命令 |
 
 ### 配置方式
@@ -299,7 +302,7 @@ group4_tools_os_skills/
 │   ├── mock_tools.py              # Mock版工具注册表（57个工具）
 │   └── mock_skills.py             # Mock版技能库（26个技能）
 │
-├── tests/                         # 单元测试（共 415 个，全部通过）
+├── tests/                         # 单元测试（共 494 个，全部通过）
 │   ├── __init__.py
 │   ├── test_tool_registry.py      # ToolRegistry测试（92个：全部工具+新工具+异常+别名+错误码）
 │   ├── test_skills.py             # SkillLibrary测试（43个：基础+扩展+搜索+Agent）
@@ -318,6 +321,10 @@ group4_tools_os_skills/
 │   ├── test_email.py              # 邮件全链路：SMTP 发信/IMAP 回读核验 + Agent 分发（27个）
 │   ├── test_agent_read_web.py     # QQ『先读后回』read_qq_chat + 联网 browser_* 白名单（11个）
 │   ├── test_web_http.py           # HTTP 联网搜索 core/web_search 离网单测：解析清洗/相对链接过滤/摘要截断/异常/瞬断重试（11个）
+│   ├── test_tool_protocol.py      # 工具协议自适应：文本协议解析/400双分支/流式适配/Failover透传/切换重置（19个）
+│   ├── test_bailian_tools.py      # 百炼服务端联网搜索 enable_search + 联网总开关三态（19个）
+│   ├── test_tool_free_sse.py      # 本地模型纯对话 tool_free + Web SSE 事件队列管线（21个）
+│   └── test_stream_stop_encoding.py # 流式 UTF-8 增量解码（乱码修复回归锁）+ 停止生成（11个）
 
 │
 ├── examples/                      # 真机可复跑示例 + 用户界面
@@ -759,7 +766,7 @@ registry.call("browser_close", {})
 # 10. 运行测试
 
 ```bash
-# 运行所有测试（共 415 个）
+# 运行所有测试（共 494 个）
 python -m pytest tests/ -v
 
 # 运行单个测试文件
@@ -814,6 +821,13 @@ python -m pytest tests/test_agent_read_web.py -v
 
 - **2026-09-06 QQ『先读后回』只读技能 + 联网白名单（给模型"能读、能查"的上下文）**：针对真机反馈"让它找 QQ 群、看聊天回话，它说 send 技能只能发不能读"——根因是**模型能"想"的范围只有上下文里出现的函数**，能力没暴露＝对它不存在。修复：① 新只读技能 **read_qq_chat**（搜索进入目标会话→OCR 核对会话标题（`make_ocr_verify`，读错群会失败关闭）→截图裁聊天区→视觉桥转写最近聊天返回文本，只读不外发）；② Agent 白名单由 2 扩到 **5**（app_send_message / **read_qq_chat** / send_email / **browser_search** / **browser_extract**），SYSTEM_PROMPT 新守则：QQ 找群看聊天＝先 `read_qq_chat` 再 `app_send_message`，联网查资料＝`browser_search`→`browser_extract` 并标注来源、不得编造；③ 技能 25→**26**（`core/vision_bridge` 缺视觉源时明确报错引导，不假装读到）。全量 **391→404 全绿**（16 个测试文件：新增 `tests/test_agent_read_web.py` 11 例 + `test_agent_skills` +2，mock 技能库/白名单对等）
 - **2026-09-06 联网搜索改 HTTP 直连（修真机"思考 3 分钟仍超时"）**：真机让 miniyu 搜 CSGO 赛果 → 反复"搜索超时"约 3 分钟。定位根因＝旧 `browser_search` 走无头浏览器"打字+合成回车"，但 **CDP 合成回车在必应/百度都不触发提交**（实测词已打进框、URL 停在首页），内部 wait_for 每次必 10s 超时、模型重试数次堆到分钟级；百度另有"安全验证"人机墙。修复＝新增 `core/web_search.py`（纯标准库、零依赖）**HTTP 直接请求必应结果页再解析 `b_algo` → {标题/链接/摘要}**，与云端联网搜索同构；基址**直连 `cn.bing.com`**（`www` 会 302 跳 cn、CN 网络下二次握手偶发被重置 WinError 10054）+ **3 次连接级重试**兜底，实测 **~0.6s** 返回 5 条结果。schema/engine 收敛为仅 `bing`（百度验证墙未接入），FAQ/技能表同步。全量 **404→415 全绿**（17 个测试文件：新增 `tests/test_web_http.py` 11 例，离网不联网）
+- **2026-09-07 FailoverClient 自动降级（主 API → 本地 Ollama → 确定性脑）**：`core/llm_client.py` 新增 FailoverClient——主 API 超时/鉴权失败/网络不通自动切本地 Ollama（5 分钟定时重试、恢复自动升级回主 API），本地也没有则落确定性脑；`config.yaml` 新增 `llm.fallback` 段（不配则行为不变，向后兼容）。新增 9 个测试，全量 **424 全绿**
+- **2026-09-07 模型切换三连修 + 可搜索模型下拉框（Web UI）**：真机暴露三个根因逐一修复——① 热切换失效：`/switch-model` 只查 `_agent.llm.model` 而 FailoverClient 没有该属性（模型名在 `primary.model`），切换被静默跳过；② 切完模型对话报"Failed to fetch"：实为上游 **HTTP 400**（历史残留 `tool_calls`/`tool` 消息，不支持 function calling 的模型直接拒收）→ `core/agent.py` 新增 `_sanitize_tool_messages()` 换模型前自动把工具调用消息转普通文本，跨模型无缝接力历史；③ 本地模型"切而不换"：只改了 fallback 模型名但主 API 可用时不走备用 → FailoverClient 新增 **`force_local_mode()`**（选本地模型即跳过云端直接本地作答，选在线模型即关闭），`status`/`Agent.model_name` 同步透出。UI 重写为**可搜索 Combobox**：输入即过滤、☁️在线/🖥️本地分组、Enter/Esc 键盘操作、点选即切；修 mousedown 事件绑定 + 加 CORS/OPTIONS 支持。内嵌浏览器实测：3 个在线模型 + 本地 7B 模型往返切换对话全通
+- **2026-09-07 工具可见性修复 + 文本协议自适应（换模型后 Agent"看不见 57 工具"）**：根因＝ReAct 只在 `provider=openai_compatible` 时把 tools 发给 LLM，配置 fallback 后变 FailoverClient（provider=failover）→ **工具列表根本没发给模型**，磁盘/QQ 全失效。修复：① failover 分支正常透传 tools；② 对**不支持 tools 参数的模型**（如 deepseek-r1-distill 实测 HTTP 400 "The tool call is not supported."）自动降级为**文本协议**——工具 JSON Schema 注入 system prompt，模型用 `<tool_call>{"name":…,"arguments":…}</tool_call>` 标记输出，客户端正则解析回正常 ReAct 循环（对标 Qwen-Agent/早期 LangChain 对无 function calling 模型的通用解），chat 与 chat_stream 双路径适配；③ `_request_messages` 不再无条件清理历史工具消息（保留多步"调用→结果"上下文），不支持时由 client 收到 400 按需降级；④ 主/备模型热切换后 `reset_runtime_flags()` 重新探测新模型工具能力。真机实测：qwen3.6-flash 磁盘/QQ 指令全通，deepseek-r1-distill 不再 400、用文本协议调 disk_usage 拿到真实数据。新增 `tests/test_tool_protocol.py` 19 个测试，全量 **443 全绿**
+- **2026-09-07 接入百炼服务端联网搜索（enable_search）：不自研搜索，用阿里云云端工具**：官方文档核实 + 真实 API 探针五场景实测——百炼 Chat Completions 下 `enable_search: true` 云端透明执行、**与本地 62 个函数工具同请求混用无冲突**（模型直接用注入的搜索资料作答）；对照组证实不开服务端搜索时模型确实会调本地 browser_search → 生效期间对模型**隐藏本地 browser_search**（每步动态评估，API 拒绝后自动还原）。`config.yaml` 新增 `llm.bailian_tools.web_search` 开关，仅 base_url 指向百炼（aliyuncs.com）时生效；`server_tools` 注入 + 400 自适应停注 + Failover 降级/force_local 返回 False 让 agent 还原本地工具。新增 `tests/test_bailian_tools.py` 16 例，**459 全绿**；端到端真机（e2e_bailian_search.py）：qwen3.6-flash 问"杭州今天天气"→ 服务端搜索生效、browser_search 已隐藏、直接给出实时天气数据（未调任何工具）
+- **2026-09-07 联网搜索总开关（DeepSeek 式：一个开关管所有联网能力）**：实测模型会自己判断要不要搜（知识题不触发、时效题才搜），但 enable_search 开着时**每次请求注入约 3K token 固定搜索指令**（知识题 prompt_tokens 24→3088）且按次计费 → 做成用户可控总开关。配置重构：删除 `llm.bailian_tools` 段、新增**顶层 `web_search.enabled`**（默认 true）三态语义——开+百炼=服务端搜索注入 + browser_search 隐藏；开+其他=本地搜索工具全可见模型自决；关=完全离线、不注入、本地搜索工具全隐藏。Agent 层 `_visible_tools()` 三分支裁剪 + `set_web_search_enabled()` 运行时切换；Web 顶栏「🌐 联网: 开/关」按钮 + `/toggle-web-search`。新增 3 例扩到 19 例，**462 全绿**；端到端真机（e2e_web_search_switch.py）：开 62/63 → 关 61/63 → 切回开还原；关态问天气模型如实答"离线模式无法获取实时数据"、未调隐藏工具、未编造
+- **2026-09-07 本地模型纯对话模式（tool_free）+ Web SSE 流式 + DeepSeek 式思考展示**：实测本地 7B 纯 CPU 写 800 token 要 132s、带 63 工具 schema 光 prompt eval 就 33~150s → 用户决策本地模型只做聊天不接工具。`tool_free` 静默忽略 tools（本地端点 localhost 自动 true，config fallback 段显式标注）；Agent 轻量对话分支 `_chat_mode()`（自述离线限制、建议切在线模型办工具类任务）；`chat_stream` 捕获 `reasoning_content`/`reasoning` 思考通道。Web 改 **SSE 事件队列**：`/chat` 立即返 task_id → 后台 `run_stream` 逐 chunk 入队 → `/task/<id>/events` 推送（reasoning/token/tool_call/confirm/done/error + 15s 心跳 + confirm 应答，done/error 自动清理）；前端思考实时滚动 + 计时、完成折叠"已深度思考（用时 Xs）"、正文逐字渐进。新增 `tests/test_tool_free_sse.py` 21 例，**483 全绿**；端到端真机（e2e_local_chat_stream.py 14/14）：force_local 切本地写故事首 token 9~20s（原 33~150s）、思考 1400+ 字 + 正文正常；场景 B 主 API 挂掉自动降级 degraded 本地回复；场景 C Web SSE 434 事件按序到达、任务无泄漏
+- **2026-09-07 本地模型乱码修复（UTF-8 增量解码）+「停止生成」打断（DeepSeek 式）**：问题一＝三个本地模型回复全变 `æ°è½æº` 乱码——根因（实测）Ollama 流式响应头不带 charset，requests `iter_content(decode_unicode=True)` 按 ISO-8859-1 误解码 UTF-8 中文（**不是模型乱码，是 Python 客户端解码层出错**）→ `chat_stream` 改按字节读流 + `codecs.getincrementaldecoder("utf-8")` 增量解码（天然容忍多字节跨网络块）；问题二＝本地小模型死循环/超长输出无法打断 → 三层：`run_stream(stop_check=...)` 回调（轮次/流式 chunk 间隙检查，保留已流出文本 + stop chunk 收尾）＋ Web `/task/<id>/stop` 端点（幂等）＋ 前端红色「⏹ 停止」按钮。新增 `tests/test_stream_stop_encoding.py` 11 例，**494 全绿**；端到端真机（e2e_stop_encoding_live.py）：1.5B/4B/7B 三模型中文全正常、打断终态 <0.5s、保留部分文本
 
 ## 第4周计划
 - 工具签名验证（可选）
@@ -828,7 +842,7 @@ python -m pytest tests/test_agent_read_web.py -v
 - **跨平台** — 兼容 Windows / Linux / macOS，使用 `pathlib` 统一路径处理，内置编码安全打印
 - **模块化** — 工具、技能、接口相互独立，新增工具只需注册无需改调用逻辑
 - **可扩展** — 支持动态注册/注销工具和技能
-- **可测试** — 415个单元测试覆盖核心功能，支持Mock测试和接口联调测试
+- **可测试** — 494个单元测试覆盖核心功能，支持Mock测试和接口联调测试
 - **可统计** — 内置调用次数、成功率、Top5排名等统计功能
 
 # 14. 跨平台兼容说明
@@ -837,7 +851,7 @@ python -m pytest tests/test_agent_read_web.py -v
 
 | 系统 | 状态 | 说明 |
 |------|------|------|
-| Windows 11 | ✅ 通过 | 415个测试全部通过，Demo正常运行 |
+| Windows 11 | ✅ 通过 | 494个测试全部通过，Demo正常运行 |
 | Ubuntu/Linux | ✅ 兼容 | 使用 `pathlib` / `shutil` 等跨平台库，无需修改 |
 | macOS | ✅ 预期兼容 | 内部测试未进行，理论兼容 |
 

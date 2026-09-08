@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.agent import Agent
 from core.agent_config import load_config, set_config_authorization
-from core.llm_client import DeterministicBrain
+from core.llm_client import DeterministicBrain, FailoverClient
 from core.safety import ConfirmationDenied
 from core.safety import AUTHZ_LEVELS, AUTHZ_LABELS, resolve_authz_level
 
@@ -37,11 +37,11 @@ from core.safety import AUTHZ_LEVELS, AUTHZ_LABELS, resolve_authz_level
 # ============================================================
 
 BANNER = r"""
-   __  ___       _       _
-  /  |/  /_   __(_)_  __(_)_  __
- / /|_/ /| | / / \ \/ /| | |/_/
-/ /  / / | |/ /  >  < | |>
-/_/  /_/  |___/  /_/\_\|_|/_/\_/
+███    ███ ██ ███    ██ ██ ██    ██ ██    ██ 
+████  ████ ██ ████   ██ ██  ██  ██  ██    ██ 
+██ ████ ██ ██ ██ ██  ██ ██   ████   ██    ██ 
+██  ██  ██ ██ ██  ██ ██ ██    ██    ██    ██ 
+██      ██ ██ ██   ████ ██    ██     ██████
 
 """
 
@@ -135,6 +135,17 @@ def print_model_info(agent: Agent, config: dict):
         print("     编辑 config.yaml 或设置环境变量 AGENT_LLM_PROVIDER=openai_compatible")
         print()
 
+    # 显示 FailoverClient 降级状态
+    if isinstance(agent.llm, FailoverClient):
+        status = agent.llm.status
+        if status["degraded"]:
+            print(f"  ⚠️  LLM 已降级（{status['last_error']}）")
+            print(f"  🔄 将在 5 分钟后自动重试主 LLM")
+            print()
+        else:
+            print(f"  ✅ 备用 LLM 已就绪（主 LLM 不可用时自动降级）")
+            print()
+
 
 def main():
     config = load_config()
@@ -153,6 +164,13 @@ def main():
     print(f"  视觉: {'支持' if agent.llm.supports_vision else '不支持'}")
     _authz_label = AUTHZ_LABELS[resolve_authz_level(config.get("agent", {}))]
     print(f"  授权档位: {_authz_label}（/authz 查看详情或切换）")
+
+    # 显示 FailoverClient 状态
+    if isinstance(agent.llm, FailoverClient):
+        if agent.llm.status["degraded"]:
+            print(f"  ⚠️  LLM 已降级: {agent.llm.status['last_error']}")
+        else:
+            print(f"  ✅ 自动降级已启用（主 LLM 不可用时切到本地 Ollama）")
 
     if is_offline:
         print()
@@ -230,6 +248,25 @@ def main():
                 continue
             elif cmd == "/model":
                 print_model_info(agent, config)
+                # 如果当前是 FailoverClient，显示可用备用模型
+                if isinstance(agent.llm, FailoverClient):
+                    status = agent.llm.status
+                    if status.get("fallback_model"):
+                        print(f"  备用模型: {status['fallback_model']}")
+                    print(f"  输入 /model switch <名称> 可切换备用模型")
+                continue
+            elif cmd.startswith("/model switch"):
+                parts = user_input.split(None, 3)
+                if len(parts) >= 3:
+                    model_name = parts[2]
+                    if agent.switch_fallback_model(model_name):
+                        print(f"  ✅ 已切换备用模型为: {model_name}")
+                    else:
+                        print(f"  ❌ 切换失败，当前不是 FailoverClient 模式")
+                else:
+                    print("  用法: /model switch <模型名称>")
+                    if isinstance(agent.llm, FailoverClient):
+                        print(f"  当前备用模型: {agent.llm.status.get('fallback_model', '无')}")
                 continue
             elif cmd.startswith("/authz"):
                 # /authz 查看当前授权档位；/authz <base|advanced|full> 切换（持久化 + 热改运行中 agent）

@@ -20,6 +20,13 @@ DEFAULTS = {
         "api_key": "",
         "model": "",
         "supports_vision": False,
+        "fallback": {
+            "provider": "openai_compatible",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "",
+            "model": "qwen2.5:1.5b",
+            "timeout": 120,
+        },
     },
     "agent": {
         "max_steps": 15,

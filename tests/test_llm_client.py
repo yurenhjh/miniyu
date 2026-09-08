@@ -7,6 +7,7 @@ import pytest
 from core.llm_client import (
     DeterministicBrain,
     OpenAICompatibleClient,
+    FailoverClient,
     create_llm_client,
     ChatResponse,
 )
@@ -229,3 +230,122 @@ class TestDashScopeDefaultModel:
             "llm": {"provider": "openai_compatible", "base_url": "https://api.openai.com/v1"},
         })
         assert c.model == "gpt-4o-mini"
+
+
+class TestFailoverClient:
+    """自动降级客户端测试"""
+
+    class _AlwaysFail:
+        """模拟总是失败的 LLM 客户端"""
+        provider = "always_fail"
+        supports_vision = False
+
+        def chat(self, messages, tools=None):
+            raise ConnectionError("模拟连接失败")
+
+        def chat_stream(self, messages, tools=None):
+            raise ConnectionError("模拟流式连接失败")
+
+    class _Succeed:
+        """模拟总是成功的 LLM 客户端"""
+        provider = "always_succeed"
+        supports_vision = False
+
+        def __init__(self, text="OK"):
+            self.text = text
+
+        def chat(self, messages, tools=None):
+            return ChatResponse(text=self.text)
+
+        def chat_stream(self, messages, tools=None):
+            yield ChatResponse(text=self.text, finish_reason="stop")
+
+    def test_failover_uses_primary(self):
+        """主 LLM 正常时直接返回"""
+        primary = self._Succeed("from primary")
+        fc = FailoverClient(primary=primary)
+        resp = fc.chat([{"role": "user", "content": "hello"}])
+        assert resp.text == "from primary"
+        assert not fc.status["degraded"]
+
+    def test_failover_fallback_to_secondary(self):
+        """主 LLM 失败时自动切到备用"""
+        primary = self._AlwaysFail()
+        fallback = self._Succeed("from fallback")
+        fc = FailoverClient(primary=primary, fallback=fallback)
+        resp = fc.chat([{"role": "user", "content": "hello"}])
+        assert resp.text == "from fallback"
+        assert fc.status["degraded"]
+        assert "always_fail" in fc.status["last_error"]
+
+    def test_failover_falls_to_deterministic(self):
+        """全部 LLM 失败时落到确定性脑"""
+        fc = FailoverClient(primary=self._AlwaysFail())
+        resp = fc.chat([{"role": "user", "content": "帮我整理桌面"}])
+        assert resp.finish_reason == "tool_calls"
+        assert fc.status["degraded"]
+
+    def test_failover_streaming_primary(self):
+        """流式：主 LLM 正常"""
+        fc = FailoverClient(primary=self._Succeed("stream ok"))
+        chunks = list(fc.chat_stream([{"role": "user", "content": "hi"}]))
+        assert len(chunks) == 1
+        assert chunks[0].text == "stream ok"
+
+    def test_failover_streaming_fallback(self):
+        """流式：主 LLM 失败，备用成功"""
+        primary = self._AlwaysFail()
+        fallback = self._Succeed("fallback stream")
+        fc = FailoverClient(primary=primary, fallback=fallback)
+        chunks = list(fc.chat_stream([{"role": "user", "content": "hi"}]))
+        assert len(chunks) == 1
+        assert chunks[0].text == "fallback stream"
+        assert fc.status["degraded"]
+
+    def test_failover_supports_vision_from_primary(self):
+        """supports_vision 继承自主 LLM"""
+        primary = self._Succeed()
+        primary.supports_vision = True
+        fc = FailoverClient(primary=primary)
+        assert fc.supports_vision is True
+
+    def test_create_with_fallback_config(self):
+        """create_llm_client 带 fallback 配置时返回 FailoverClient"""
+        cfg = {
+            "llm": {
+                "provider": "openai_compatible",
+                "base_url": "https://test.com/v1",
+                "api_key": "test",
+                "model": "gpt-4o",
+                "fallback": {
+                    "provider": "openai_compatible",
+                    "base_url": "http://localhost:11434/v1",
+                    "api_key": "",
+                    "model": "qwen2.5:1.5b",
+                },
+            },
+        }
+        client = create_llm_client(cfg)
+        assert isinstance(client, FailoverClient)
+        assert not client.status["degraded"]
+
+    def test_create_without_fallback(self):
+        """不带 fallback 配置时返回普通客户端"""
+        cfg = {
+            "llm": {
+                "provider": "openai_compatible",
+                "base_url": "https://test.com/v1",
+                "api_key": "test",
+            },
+        }
+        client = create_llm_client(cfg)
+        assert isinstance(client, OpenAICompatibleClient)
+
+    def test_supports_vision_from_primary(self):
+        """FailoverClient 的 supports_vision 跟随主 LLM"""
+        fc = FailoverClient(primary=self._Succeed())
+        assert fc.supports_vision is False
+        fc2 = FailoverClient(primary=self._Succeed())
+        fc2.primary.supports_vision = True
+        fc2.supports_vision = True
+        assert fc2.supports_vision is True

@@ -27,7 +27,7 @@ from typing import Callable, Optional, Generator
 
 from core.agent_config import load_config
 from core.conversation import Conversation, SessionManager
-from core.llm_client import LLMClient, DeterministicBrain, OpenAICompatibleClient, create_llm_client, ChatResponse
+from core.llm_client import LLMClient, DeterministicBrain, OpenAICompatibleClient, FailoverClient, create_llm_client, ChatResponse
 from core.os_service_api import OSServiceAPI
 from core.safety import (
     get_meta, preview, ConfirmationDenied,
@@ -42,6 +42,19 @@ _GUI_TOOLS = {
     "browser_click", "browser_type",
     "activate_window",
 }
+
+# 纯对话模式 system prompt（本地小模型，tool_free）：
+# 不传工具也不带工具守则（实测 63 个工具 schema ≈ 7.7K token，CPU 模型光 prompt eval
+# 就要 33~150s+）；如实说明能力边界，引导用户切在线模型做实际操作
+_CHAT_SYSTEM_PROMPT = (
+    "你是 miniyu，一个运行在用户本机的桌面 AI 助手。当前使用本地模型，处于纯对话模式，"
+    "没有接入任何工具，请直接用中文回答问题、聊天、写作和解释概念。\n"
+    "注意：\n"
+    "1. 你无法执行文件操作、系统控制等实际任务，也无法联网获取实时信息（天气/新闻/股价等）；"
+    "涉及这些时如实说明，并建议用户切换到在线模型（如阿里云百炼）后再操作；\n"
+    "2. 不要声称自己调用了工具或已联网，不要编造实时数据；\n"
+    "3. 长文创作时直接开始写，不要反复确认。"
+)
 
 # 注入给真实 LLM 的 system prompt（仅 openai_compatible 模式生效，离线脑不注入以免干扰关键词匹配）
 SYSTEM_PROMPT = (
@@ -67,6 +80,28 @@ SYSTEM_PROMPT = (
     "9. 需要『联网查资料 / 最新信息 / 外部事实 / 你不确定』时，先用 browser_search 搜索并读返回的"
     "结果摘要；想细读某一条结果，再把对应网址交给 browser_extract 打开取正文。联网结果来自互联网，"
     "注意时效与来源可信度，引用时应说明出处，不要编造没搜到的内容；一次搜不到就换关键词再搜。"
+)
+
+# 服务端联网搜索（百炼 enable_search）生效时追加到 system prompt，显式覆盖守则第 9 条：
+# 此刻本地 browser_search 已对模型隐藏，若仍按第 9 条指引会去调用不存在的工具；
+# browser_extract 保留可用（服务端搜索只给摘要，深读网页正文还靠它）。
+# 实测（examples/probe_bailian_search.py 场景 B/C）模型能直接用注入的搜索资料作答，
+# 但措辞易写成『您提供的资料/知识库』，显式告知可让回复更自然。
+_SERVER_SEARCH_HINT = (
+    "\n补充（联网能力已升级，本条覆盖守则第 9 条）：你已内置服务端联网搜索，系统会在需要时"
+    "自动把最新网络资料注入对话，无需自己搜索。涉及天气、新闻、价格、最新事件等实时信息时，"
+    "直接依据已注入的搜索资料回答，自然注明信息来源与日期；不要调用 browser_search（当前不可用），"
+    "也不要声称自己无法联网。若需要读取某网页的完整正文，仍可使用 browser_extract。"
+)
+
+# 联网搜索总开关（config.yaml 顶层 web_search.enabled）关闭时追加到 system prompt：
+# 本地 browser_search / browser_extract 均已对模型隐藏，显式覆盖守则第 9 条，
+# 引导模型基于自身知识作答并如实说明离线限制，而不是编造或调用不存在的工具。
+_OFFLINE_HINT = (
+    "\n补充（当前处于离线模式，本条覆盖守则第 9 条）：联网搜索功能已被用户关闭，"
+    "browser_search / browser_extract 工具当前不可用。请基于自身知识回答问题；"
+    "遇到天气、新闻、价格等实时信息时，如实告知用户自己当前无法联网获取，"
+    "建议开启联网开关后再问，不要编造实时数据。"
 )
 
 
@@ -159,6 +194,16 @@ class Agent:
         self.confirm_handler = confirm_handler
         self.system_prompt = system_prompt or SYSTEM_PROMPT
 
+        # 联网搜索总开关（config.yaml 顶层 web_search.enabled，默认开）：
+        # 管 百炼服务端搜索 + 本地 browser_search/browser_extract 三类联网能力。
+        # 总开关是唯一源头：构造时同步进 LLM 客户端的 server_tools，
+        # 避免外部传入的 client 与 config 开关状态不一致
+        self.web_search_enabled = bool(
+            self.config.get("web_search", {}).get("enabled", True))
+        _ws_client = getattr(self.llm, "primary", self.llm)
+        if hasattr(_ws_client, "server_tools"):
+            _ws_client.server_tools["web_search"] = self.web_search_enabled
+
         agent_cfg = self.config.get("agent", {})
         memory_cfg = self.config.get("memory", {})
 
@@ -231,6 +276,12 @@ class Agent:
     def list_sessions(self) -> list[dict]:
         """列出所有会话摘要"""
         return self.sessions.list()
+
+    def switch_fallback_model(self, model_name: str) -> bool:
+        """切换备用 LLM 的模型（运行时热切换，不重建 Agent）"""
+        if isinstance(self.llm, FailoverClient):
+            return self.llm.switch_fallback_model(model_name)
+        return False
 
     @property
     def current_session_id(self) -> Optional[str]:
@@ -339,20 +390,27 @@ class Agent:
             self.sessions.save()
             return clean_msg
 
-        # 规划层：分解复杂任务为子步骤（对标 AutoGPT）
-        self.current_plan = self._plan(user_input)
-        self.current_plan_index = 0
-        plan_context = ""
-        if len(self.current_plan) > 1:
-            step_summary = " → ".join(s.get("action", s.get("step", "")) for s in self.current_plan[:3])
-            plan_context = f"[规划: {step_summary}]"
-            self.conversation.add_assistant(content=plan_context)
+        # 规划层：分解复杂任务为子步骤（对标 AutoGPT）；
+        # 纯对话模式（本地小模型）跳过——任务分解只有配合工具执行才有意义
+        chat_mode = self._chat_mode()
+        if chat_mode:
+            self.current_plan = []
+            self.current_plan_index = 0
+            plan_context = ""
+        else:
+            self.current_plan = self._plan(user_input)
+            self.current_plan_index = 0
+            plan_context = ""
+            if len(self.current_plan) > 1:
+                step_summary = " → ".join(s.get("action", s.get("step", "")) for s in self.current_plan[:3])
+                plan_context = f"[规划: {step_summary}]"
+                self.conversation.add_assistant(content=plan_context)
 
         # 获取工具描述（MCP 格式）
         tools = self.api.list_tools_mcp()
 
         # 获取工具描述（OpenAI 格式，用于真实 LLM）
-        # = 57 个底层工具 + 白名单组合技能（app_send_message、send_email 等）+ 视觉能力函数 screen_inspect
+        # = 57 个底层工具 + 白名单组合技能（app_send_message、send_email 等） + 视觉能力函数 screen_inspect
         openai_tools = self._agent_openai_tools()
 
         for step in range(1, self.max_steps + 1):
@@ -360,7 +418,9 @@ class Agent:
             messages = self._request_messages()
             response = self.llm.chat(
                 messages,
-                tools=openai_tools if self.llm.provider == "openai_compatible" else None,
+                tools=None if chat_mode else (
+                    self._visible_tools(openai_tools) if self.llm.provider in ("openai_compatible", "failover") else None
+                ),
             )
 
             if not response:
@@ -435,12 +495,16 @@ class Agent:
     # 流式入口
     # ============================================================
 
-    def run_stream(self, user_input: str):
+    def run_stream(self, user_input: str, stop_check=None):
         """
         流式执行：逐 token 产出回复。
 
         对标 ChatGPT 的逐字输出效果。
         前端可配合 SSE 直接转发。
+
+        stop_check：可选回调 () -> bool，流式过程中每个 chunk 之间被调用，
+        返回 True 时立即终止生成（保留已流出的部分文本入会话历史），
+        用于 Web UI 的"停止生成"按钮打断死循环/超长输出。
 
         用法：
             for chunk in agent.run_stream("磁盘空间"):
@@ -465,21 +529,39 @@ class Agent:
         # 用户说"清理截图/清理产物"等 → 直接清当前会话过程产物，不经过 LLM
         clean_msg = self._try_cleanup_command(user_input)
         if clean_msg is not None:
-            yield ChatResponse(text=clean_msg, finish_reason="stop")
+            # 先落盘再 yield 终止块：SSE 消费方收到 stop 即退出，生成器被弃置，
+            # yield 之后的代码不会执行（所有终止路径同理）
             self.sessions.save()
+            yield ChatResponse(text=clean_msg, finish_reason="stop")
             return
 
+        # 纯对话模式（本地小模型）：跳过规划层，不传工具
+        chat_mode = self._chat_mode()
         openai_tools = self._agent_openai_tools()
 
         for step in range(1, self.max_steps + 1):
+            # 轮次间隙也检查打断（长时间工具执行后进入下一轮 LLM 调用前）
+            if stop_check is not None and stop_check():
+                yield self._stopped_response("")
+                return
             messages = self._request_messages()
             collected_text = ""
 
-            for chunk in self.llm.chat_stream(
+            llm_stream = self.llm.chat_stream(
                 messages,
-                tools=openai_tools if self.llm.provider == "openai_compatible" else None,
-            ):
-                if chunk.finish_reason == "streaming":
+                tools=None if chat_mode else (
+                    self._visible_tools(openai_tools) if self.llm.provider in ("openai_compatible", "failover") else None
+                ),
+            )
+            stopped = False
+            for chunk in llm_stream:
+                if stop_check is not None and stop_check():
+                    stopped = True
+                    break
+                if chunk.finish_reason == "reasoning":
+                    # 思考 token 透传给前端（DeepSeek 式思考过程展示），不进对话历史
+                    yield chunk
+                elif chunk.finish_reason == "streaming":
                     collected_text += chunk.text
                     yield chunk
                 elif chunk.finish_reason == "tool_calls":
@@ -500,11 +582,11 @@ class Agent:
                         result = self._execute_one(name, args)
 
                         if not result.get("success") and "拒绝" in result.get("error", ""):
+                            self.sessions.save()
                             yield ChatResponse(
                                 text=self._with_reminder(f"操作已取消：{result['error']}"),
                                 finish_reason="stop",
                             )
-                            self.sessions.save()
                             return
 
                         self.conversation.add_tool_result(
@@ -530,8 +612,8 @@ class Agent:
                     # 离线脑执行完工具后直接返回
                     if isinstance(self.llm, DeterministicBrain):
                         summary = self._format_deterministic_result(chunk.tool_calls, result)
-                        yield ChatResponse(text=self._with_reminder(summary), finish_reason="stop")
                         self.sessions.save()
+                        yield ChatResponse(text=self._with_reminder(summary), finish_reason="stop")
                         return
 
                     # 继续下一轮 ReAct 循环
@@ -543,8 +625,8 @@ class Agent:
                     reminder = self._artifact_reminder()
                     if reminder:
                         yield ChatResponse(text=reminder, finish_reason="streaming")
-                    yield chunk
                     self.sessions.save()
+                    yield chunk
                     return
             else:
                 # 内层流正常结束（没有 break）→ 说明是纯文本回复且已收集完
@@ -554,22 +636,45 @@ class Agent:
                     reminder = self._artifact_reminder()
                     if reminder:
                         yield ChatResponse(text=reminder, finish_reason="streaming")
-                    yield ChatResponse(finish_reason="stop")
                     self.sessions.save()
+                    yield ChatResponse(finish_reason="stop")
                     return
                 continue
+            if stopped:
+                # 用户打断：保留已流出的部分文本，落盘后以 stop chunk 收尾
+                # （stop chunk 携带完整文本，SSE 消费方整体替换，防重复拼接）
+                yield self._stopped_response(collected_text)
+                return
             # 如果 break 了（tool_calls），继续下一轮
             continue
 
         # 超出最大步数
         summary = f"任务未能在 {self.max_steps} 步内完成，已自动终止。"
         self.conversation.add_assistant(content=summary)
-        yield ChatResponse(text=self._with_reminder(summary), finish_reason="stop")
         self.sessions.save()
+        yield ChatResponse(text=self._with_reminder(summary), finish_reason="stop")
 
     # ============================================================
     # 内部方法
     # ============================================================
+
+    def _stopped_response(self, partial_text: str) -> "ChatResponse":
+        """用户手动停止：部分文本 + 停止标记入会话并落盘，返回终止 chunk"""
+        note = "⏹ 已手动停止生成。"
+        content = f"{partial_text}\n\n{note}" if partial_text else note
+        self.conversation.add_assistant(content=content)
+        self.sessions.save()
+        return ChatResponse(text=content, finish_reason="stop")
+
+    def _chat_mode(self) -> bool:
+        """
+        纯对话模式判定：客户端声明 tool_free（本地端点默认），或
+        FailoverClient 已降级/手动切到 tool_free 的本地端点。
+        生效后：不传工具、跳过规划层、system prompt 换成 _CHAT_SYSTEM_PROMPT。
+        """
+        if getattr(self.llm, "tool_free", False):
+            return True
+        return bool(getattr(self.llm, "tool_free_active", False))
 
     def _request_messages(self) -> list:
         """
@@ -578,11 +683,38 @@ class Agent:
         真实 LLM 请求在对话历史前注入 system prompt（提升工具调用可靠性）；
         离线脑（DeterministicBrain）靠扫描全部 content 做关键词匹配，
         不注入 system，避免干扰意图识别。
+        纯对话模式（本地小模型）→ 换轻量 _CHAT_SYSTEM_PROMPT（无工具守则）；
+        联网状态三分支：服务端搜索生效 → +_SERVER_SEARCH_HINT；
+        总开关关闭 → +_OFFLINE_HINT（均显式覆盖守则第 9 条）。
         """
         messages = self.conversation.get_window()
-        if self.llm.provider == "openai_compatible":
-            return [{"role": "system", "content": self.system_prompt}] + messages
+        if self.llm.provider in ("openai_compatible", "failover"):
+            # 完整保留工具调用历史（支持 function calling 的模型可续接多步任务）；
+            # 不支持的历史格式由 OpenAICompatibleClient 收到 400 后自动清理重试
+            if self._chat_mode():
+                return [{"role": "system", "content": _CHAT_SYSTEM_PROMPT}] + messages
+            system = self.system_prompt
+            if not self.web_search_enabled:
+                system += _OFFLINE_HINT
+            elif getattr(self.llm, "server_web_search_active", False):
+                system += _SERVER_SEARCH_HINT
+            return [{"role": "system", "content": system}] + messages
         return messages
+
+    def set_web_search_enabled(self, enabled: bool) -> None:
+        """
+        运行时切换联网搜索总开关（Web UI 顶栏按钮调用，不回写 config.yaml）。
+
+        同步联动：主 LLM 客户端的 server_tools 开关（控制 enable_search 注入）
+        + 重置探测标志（新状态下重新探测模型能力）。工具可见性与 system prompt
+        由 _visible_tools()/_request_messages() 每步动态评估，即时生效。
+        """
+        self.web_search_enabled = bool(enabled)
+        client = getattr(self.llm, "primary", self.llm)
+        if hasattr(client, "server_tools"):
+            client.server_tools["web_search"] = self.web_search_enabled
+        if hasattr(client, "reset_runtime_flags"):
+            client.reset_runtime_flags()
 
     def _execute_one(self, name: str, args: dict) -> dict:
         """
@@ -718,8 +850,34 @@ class Agent:
         return text + r if r else text
 
     def _agent_openai_tools(self) -> list:
-        """模型可见函数全集 = 57 底层工具 + 白名单组合技能 + 视觉能力函数 screen_inspect"""
+        """模型可见函数全集 = 57 底层工具 + 白名单组合技能 + 视觉能力函数 screen_inspect
+
+        注意：本方法返回全集（供测试与统计引用）；服务端联网搜索生效时，
+        由 _visible_tools() 在 ReAct 每一步动态隐藏本地 browser_search。
+        """
         return self.api.list_tools_openai() + self.api.list_skills_openai() + [dict(_AGENT_VISION_TOOL)]
+
+    def _visible_tools(self, tools: list) -> list:
+        """
+        按联网搜索总开关（web_search.enabled）动态裁剪模型可见工具（每步评估）。
+
+        三分支（DeepSeek 式一个开关管所有联网能力）：
+          总开关关       → 隐藏 browser_search + browser_extract（完全离线问答）
+          服务端搜索生效 → 隐藏 browser_search（被百炼 enable_search 替代；实测
+                           probe_bailian_search.py 场景 D：不藏则模型会选质量差的本地搜索），
+                           browser_extract 保留（服务端搜索只给摘要，深读正文还靠它）
+          其余（开+非百炼端点）→ 全部可见，模型自行决定是否本地搜索
+        API 拒绝 enable_search → llm_client 置 _server_search_rejected →
+        server_web_search_active 变 False → 下一步自动还原本地工具兜底，无需重启。
+        """
+        if not self.web_search_enabled:
+            hidden = {"browser_search", "browser_extract"}
+        elif getattr(self.llm, "server_web_search_active", False):
+            hidden = {"browser_search"}
+        else:
+            hidden = set()
+        return [t for t in tools
+                if t.get("function", {}).get("name") not in hidden]
 
     def _capture_and_add_image(self, note: str = ""):
         """
@@ -855,6 +1013,8 @@ class Agent:
 
     @property
     def provider(self) -> str:
+        if isinstance(self.llm, FailoverClient):
+            return self.llm.status["current_provider"]
         return self.llm.provider
 
     @property
@@ -862,9 +1022,22 @@ class Agent:
         """获取当前使用的模型名称"""
         if isinstance(self.llm, DeterministicBrain):
             return "离线脑（规则匹配）"
-        if hasattr(self.llm, "model") and self.llm.model:
-            return self.llm.model
-        return self.llm.provider
+        if isinstance(self.llm, FailoverClient):
+            status = self.llm.status
+            if status.get("force_local"):
+                return self._get_llm_model_name(self.llm.fallback)
+            if status["degraded"]:
+                provider_map = {"openai_compatible": "本地 Ollama", "deterministic": "离线脑"}
+                current = provider_map.get(status["current_provider"], status["current_provider"])
+                return f"{current}（⚠️ 降级至）"
+            return self._get_llm_model_name(self.llm.primary)
+        return self._get_llm_model_name(self.llm)
+
+    @staticmethod
+    def _get_llm_model_name(llm) -> str:
+        if hasattr(llm, "model") and llm.model:
+            return llm.model
+        return llm.provider
 
     # ============================================================
     # 格式化方法

@@ -18,13 +18,22 @@ class TestAgent:
     """Agent 核心功能测试"""
 
     def setup_method(self):
+        # storage_dir 指向临时目录：测试不得读写真实 conversations/（曾把 stub
+        # 回复写进用户会话，导致浏览器测试历史被污染）
+        import tempfile
+        self._tmpdir = tempfile.mkdtemp(prefix="miniyu_test_")
         self.agent = Agent(
             config={
                 "llm": {"provider": "deterministic"},
                 "agent": {"max_steps": 15, "confirm_high_risk": False, "history_window": 20},
+                "memory": {"storage_dir": self._tmpdir},
             },
             confirm_handler=None,
         )
+
+    def teardown_method(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_empty_input(self):
         result = self.agent.run("")
@@ -68,7 +77,7 @@ class TestAgent:
 class TestAgentWithConfirm:
     """Agent 高危确认测试"""
 
-    def test_high_risk_denied(self):
+    def test_high_risk_denied(self, tmp_path):
         """高危操作拒绝→返回取消信息"""
         def deny_handler(pv):
             raise ConfirmationDenied(pv.get("name", ""))
@@ -77,6 +86,7 @@ class TestAgentWithConfirm:
             config={
                 "llm": {"provider": "deterministic"},
                 "agent": {"max_steps": 15, "confirm_high_risk": True, "history_window": 20},
+                "memory": {"storage_dir": str(tmp_path)},
             },
             confirm_handler=deny_handler,
         )
@@ -84,7 +94,7 @@ class TestAgentWithConfirm:
         result = agent.run("结束进程 1234")
         assert "拒绝" in result or "取消" in result
 
-    def test_high_risk_allowed(self):
+    def test_high_risk_allowed(self, tmp_path):
         """高危操作放行→正常执行"""
         def allow_handler(pv):
             return True
@@ -93,6 +103,7 @@ class TestAgentWithConfirm:
             config={
                 "llm": {"provider": "deterministic"},
                 "agent": {"max_steps": 15, "confirm_high_risk": True, "history_window": 20},
+                "memory": {"storage_dir": str(tmp_path)},
             },
             confirm_handler=allow_handler,
         )
@@ -103,7 +114,7 @@ class TestAgentWithConfirm:
 class TestAgentMaxSteps:
     """最大步数测试"""
 
-    def test_max_steps_guard(self):
+    def test_max_steps_guard(self, tmp_path):
         """超步数自动终止"""
         # 用离线脑，max_steps=1，能正常完成的任务不受影响
         # 正常情况下离线脑1步就完成
@@ -111,6 +122,7 @@ class TestAgentMaxSteps:
             config={
                 "llm": {"provider": "deterministic"},
                 "agent": {"max_steps": 1, "confirm_high_risk": False, "history_window": 20},
+                "memory": {"storage_dir": str(tmp_path)},
             },
         )
         result = agent.run("C盘空间")

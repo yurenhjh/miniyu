@@ -34,6 +34,42 @@ llm:
   timeout: 60
   max_total_tokens: 0
 
+  # 可选：自动降级（fallback）—— 主 API 不可用时的备用 LLM（09-07 新增）
+  # 优先级：主 LLM（上面配置的） → 备用 LLM（此段） → 确定性脑（纯规则零依赖）。
+  # 主 API 超时/鉴权失败/网络不通时自动切本地 Ollama；恢复后每 5 分钟自动重试主 API。
+  # 零额外依赖：仅需 Ollama 在本地运行（http://localhost:11434/v1），
+  # 安装 ollama.com 或 winget install Ollama.Ollama；拉模型 ollama pull <模型名>。
+  # 不需要可删除整个 fallback 段，不影响主 LLM 使用。
+  fallback:
+    provider: openai_compatible
+    base_url: "http://localhost:11434/v1"
+    api_key: ""            # ← 本地 Ollama 一般不需要 key
+    model: "qwen2.5:1.5b"  # 本地模型（小即可，CPU 可跑）
+    supports_vision: false
+    # 纯对话模式：本地小模型只做聊天/问答/创作，不接工具（不带几十个工具 schema，
+    # 否则纯 CPU 光解析工具描述就要数十秒）。本地端点(localhost)默认即 true。
+    tool_free: true
+    # 本地模型较慢，超时放长（流式输出不受此限制）
+    timeout: 300
+    # 可选备用模型列表（供 Web UI 下拉切换）；第一个为默认模型
+    models:
+      - "qwen2.5:1.5b"
+      # - "huihui_ai/qwen3-abliterated:4b"    # 角色扮演/去审查版，~2.5GB，CPU 顺畅
+      # - "richardyoung/qwen2.5-7b-instruct-abliterated"  # ~4.7GB，推荐主力
+
+# ============================================================
+# 联网搜索总开关（web_search）—— DeepSeek 式：一个开关管所有联网能力（09-07 新增）
+# ============================================================
+#   true  : 联网可用——
+#           base_url 指向百炼时自动走服务端搜索（enable_search，云端执行、回答带参考来源），
+#           本地 browser_search 同时对模型隐藏（避免选到质量较差的本地搜索）；
+#           其他提供商（DeepSeek/Ollama 等）则保留本地搜索工具，模型自行决定。
+#   false : 完全离线——服务端不注入，本地搜索工具全部对模型隐藏，实时信息如实告知无法获取。
+# 说明：Web UI 顶栏「联网」按钮可运行时即时切换（不回写本文件）。开启服务端搜索每次请求
+# 注入约 3K token 搜索指令且按次计费，不需要联网时可关闭省 token 和延迟。
+web_search:
+  enabled: true
+
 # ============================================================
 # 视觉桥（vision_bridge）—— 主对话(llm)为纯文本时，看图/OCR 用的独立 API
 # ============================================================

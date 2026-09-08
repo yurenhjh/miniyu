@@ -55,10 +55,25 @@ class TestSkillLibrary(unittest.TestCase):
         self.assertFalse(result["success"])
 
     def test_cleanup_temp(self):
-        """测试临时文件清理"""
-        result = self.skills.call("cleanup_temp")
-        self.assertTrue(result["success"])
-        self.assertIn("清理", result["result"])
+        """测试临时文件清理（沙箱目录，绝不动真实 %TEMP%——曾删掉 pytest 自己的
+        临时目录导致全量套件里 test_tool_free_sse 的 tmp_path 报 FileNotFoundError）"""
+        from unittest.mock import patch
+
+        sandbox = tempfile.mkdtemp(prefix="miniyu_cleanup_test_")
+        try:
+            open(os.path.join(sandbox, "junk1.txt"), "w").close()
+            os.makedirs(os.path.join(sandbox, "junkdir"), exist_ok=True)
+            open(os.path.join(sandbox, "junkdir", "junk2.bin"), "w").close()
+
+            with patch("core.utils.get_temp_path", return_value=Path(sandbox)):
+                result = self.skills.call("cleanup_temp")
+
+            self.assertTrue(result["success"])
+            self.assertIn("清理", result["result"])
+            self.assertFalse(os.path.exists(os.path.join(sandbox, "junk1.txt")))
+            self.assertFalse(os.path.exists(os.path.join(sandbox, "junkdir")))
+        finally:
+            shutil.rmtree(sandbox, ignore_errors=True)
 
     def test_search_file(self):
         """测试文件搜索技能"""

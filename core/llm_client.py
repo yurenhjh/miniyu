@@ -2,10 +2,11 @@
 llm_client.py
 第4组：LLM 客户端抽象层
 
-支持三种模式：
+支持多种模式：
   1. DeterministicBrain  — 离线规则匹配，零依赖，默认兜底
   2. OpenAICompatibleClient — 兼容 OpenAI 格式的任意 API（GPT / DeepSeek / 豆包 / Ollama）
-  3. ChatResponse — 统一响应格式
+  3. FailoverClient — 多 Provider 自动降级（主 API → 本地模型 → 确定性脑）
+  4. ChatResponse — 统一响应格式
 
 设计参考：
   - OpenAI Function Calling 格式
@@ -13,14 +14,19 @@ llm_client.py
   - LangChain @tool 装饰器的参数生成思路
 """
 
+import codecs
 import json
+import logging
 import os
 import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
 
 import requests
+
+_logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -35,16 +41,21 @@ class ChatResponse:
     text:       纯文本回复（finish_reason=stop 时）
     tool_calls: 工具调用列表（finish_reason=tool_calls 时）
                  每项格式：{"name": str, "arguments": dict}
-    finish_reason: "stop" | "tool_calls"
+    finish_reason: "stop" | "tool_calls" | "streaming"（流式中间 token）
+                 | "reasoning"（流式思考 token，正文在 reasoning 字段）
+    reasoning:  思考过程（深度思考模型）：
+                 非流式=完整思考文本；流式=单个思考增量（finish_reason="reasoning"）
+                 来源：reasoning_content（百炼/DeepSeek）/ reasoning（Ollama）/ <think> 标签兜底
     raw:        原始响应（调试用）
     """
     text: str = ""
     tool_calls: list[dict] = field(default_factory=list)
     finish_reason: str = "stop"
+    reasoning: str = ""
     raw: Optional[dict] = None
 
     def __bool__(self):
-        return bool(self.text) or bool(self.tool_calls)
+        return bool(self.text) or bool(self.tool_calls) or bool(self.reasoning)
 
 
 # ============================================================
@@ -83,6 +94,11 @@ class LLMClient(ABC):
         对标 ChatGPT 的逐字输出效果。
         """
         yield self.chat(messages, tools=tools)
+
+    @property
+    def server_web_search_active(self) -> bool:
+        """是否启用服务端联网搜索（百炼 enable_search，云端透明执行；子类按需覆写）"""
+        return False
 
 
 # ============================================================
@@ -460,6 +476,8 @@ class OpenAICompatibleClient(LLMClient):
         supports_vision: bool = False,
         timeout: int = 60,
         max_total_tokens: int = 0,
+        server_tools: dict = None,
+        tool_free: bool = False,
     ):
         # base_url 归一化：缺 /v1 自动补（如 https://api.deepseek.com → .../v1），
         # 让不同提供商的写法和 README/config 注释保持一致。
@@ -476,6 +494,73 @@ class OpenAICompatibleClient(LLMClient):
         self.max_total_tokens = max_total_tokens  # 0 表示不限制
         self.total_tokens_used = 0
         self._last_usage = {}
+        # 纯对话模式：本地小模型（CPU 推理慢，实测 63 个工具 schema ≈ 7.7K token，
+        # prompt eval 就要 33~150s+）不传工具，只做日常问答/创作。
+        # chat()/chat_stream() 收到 tools 参数也会直接忽略。
+        self.tool_free = tool_free
+        # 运行时工具能力探测（切换模型后需 reset）：
+        #   _tools_param_rejected  — 模型不支持 tools 参数（如 deepseek-r1-distill），改走文本协议
+        #   _tool_history_rejected — 历史中的 tool_calls/tool 消息被 API 拒收，之后自动清理
+        #   _server_search_rejected — 百炼 enable_search 被拒（如切到不支持的模型），停用服务端搜索
+        self._tools_param_rejected = False
+        self._tool_history_rejected = False
+        # 百炼服务端工具开关（create_llm_client 按顶层 web_search.enabled 预置；云端执行、无本地实现）
+        self.server_tools = server_tools or {}
+        self._server_search_rejected = False
+
+    def reset_runtime_flags(self):
+        """重置工具能力探测标志（热切换模型后调用，新模型能力需重新探测）"""
+        self._tools_param_rejected = False
+        self._tool_history_rejected = False
+        self._server_search_rejected = False
+
+    @property
+    def is_bailian(self) -> bool:
+        """base_url 是否指向阿里云百炼（DashScope 兼容模式或专属 MaaS 端点）"""
+        return "aliyuncs.com" in self.base_url
+
+    @property
+    def server_web_search_active(self) -> bool:
+        """服务端联网搜索是否生效（配置开启 + 百炼端点 + 未被 API 拒绝）"""
+        return (bool(self.server_tools.get("web_search"))
+                and self.is_bailian
+                and not self._server_search_rejected)
+
+    def _apply_server_tools(self, body: dict) -> None:
+        """把百炼服务端工具开关注入请求体（云端透明执行，无 tool_calls 往返）。
+
+        实测依据（examples/probe_bailian_search.py）：enable_search 与本地函数工具
+        同请求混用无冲突、多轮工具历史正常；被 API 拒绝时由 chat()/chat_stream()
+        的 400 分支置 _server_search_rejected 自适应停用。
+        """
+        if self.server_web_search_active:
+            body["enable_search"] = True
+
+    @staticmethod
+    def _has_tool_messages(messages: list[dict]) -> bool:
+        """消息列表中是否含 tool_calls / tool role 消息"""
+        return any(m.get("role") == "tool" or m.get("tool_calls") for m in messages)
+
+    @staticmethod
+    def _sanitize_tool_messages(messages: list[dict]) -> list:
+        """
+        清理对话历史中的 tool_calls / tool 角色消息（转为纯文本），保证任意模型可接收。
+
+        - tool role 消息 → 删除（内容并入 assistant 调用消息不可行，直接丢弃）
+        - 带 tool_calls 的 assistant → 保留 content，无 content 则标注"[已调用工具]"
+        """
+        sanitized = []
+        for m in messages:
+            if m.get("role") == "tool":
+                continue
+            if m.get("tool_calls"):
+                sanitized.append({
+                    "role": "assistant",
+                    "content": m.get("content") or "[工具调用已执行]",
+                })
+            else:
+                sanitized.append(m)
+        return sanitized
 
     @property
     def token_usage(self) -> dict:
@@ -503,6 +588,18 @@ class OpenAICompatibleClient(LLMClient):
             "Content-Type": "application/json",
         }
 
+        # 运行时自适应（须在构造 body 前处理，否则 body 仍引用旧列表）：
+        # 已知模型不支持 tools 参数 → 文本协议模式；
+        # 已知历史 tool 消息被拒 → 预先清理
+        if tools and self._tools_param_rejected:
+            return self._chat_text_protocol(messages, tools)
+        if self._tool_history_rejected and self._has_tool_messages(messages):
+            messages = self._sanitize_tool_messages(messages)
+
+        # 纯对话模式（本地小模型）：忽略工具参数
+        if self.tool_free:
+            tools = None
+
         body = {
             "model": self.model,
             "messages": messages,
@@ -524,6 +621,9 @@ class OpenAICompatibleClient(LLMClient):
             body["tools"] = tools
             body["tool_choice"] = "auto"
 
+        # 百炼服务端工具（enable_search 等，云端透明执行）
+        self._apply_server_tools(body)
+
         try:
             resp = requests.post(
                 url, headers=headers, json=body, timeout=self.timeout
@@ -538,6 +638,15 @@ class OpenAICompatibleClient(LLMClient):
                    f"  https://api.deepseek.com")
             return ChatResponse(text=msg)
         except requests.exceptions.Timeout:
+            if self.tool_free:
+                return ChatResponse(
+                    text=f"⏱️ 请求超时（{self.timeout}s）。\n\n"
+                         "本地模型在 CPU 上推理较慢，长文创作容易超过总超时。\n"
+                         "建议：\n"
+                         "  1. 用 Web 界面（流式输出，边生成边显示，不受总超时限制）\n"
+                         "  2. 在 config.yaml 里调大 fallback 的 timeout 值\n"
+                         "  3. 换更小的本地模型（如 4b）"
+                )
             return ChatResponse(
                 text=f"⏱️ 请求超时（{self.timeout}s）。\n\n"
                      "可能原因：\n"
@@ -554,6 +663,35 @@ class OpenAICompatibleClient(LLMClient):
                     detail = e.response.json().get("error", {}).get("message", "")
                 except Exception:
                     detail = e.response.text[:200]
+            detail_l = (detail or "").lower()
+
+            # ---- 400 工具能力自适应（模型不支持 function calling 的两种表现）----
+            if status == 400:
+                # ① 模型不支持 tools 参数（如 deepseek-r1-distill 系）：
+                #    错误信息形如 "The tool call is not supported."
+                if tools and ("tool call is not supported" in detail_l
+                              or "does not support tool" in detail_l
+                              or "tools is not supported" in detail_l):
+                    self._tools_param_rejected = True
+                    _logger.info(f"模型 {self.model} 不支持 tools 参数，自动切换文本协议模式")
+                    return self._chat_text_protocol(messages, tools)
+                # ② 历史中的 tool_calls / tool 消息被拒：
+                #    错误信息形如 "messages with role \"tool\" must be ..."
+                if self._has_tool_messages(messages) and (
+                        'role "tool"' in detail_l or "tool_calls" in detail_l
+                ):
+                    self._tool_history_rejected = True
+                    _logger.info(f"模型 {self.model} 拒收历史工具消息，自动清理后重试")
+                    return self.chat(self._sanitize_tool_messages(messages), tools=tools)
+                # ③ enable_search 被拒（模型不支持服务端联网搜索）：
+                #    停注参数重试；agent 层据 server_web_search_active=False 还原本地搜索工具
+                if body.get("enable_search") and (
+                        "enable_search" in detail_l
+                        or ("search" in detail_l and "support" in detail_l)
+                ):
+                    self._server_search_rejected = True
+                    _logger.info(f"模型 {self.model} 拒绝 enable_search，停用服务端联网搜索")
+                    return self.chat(messages, tools=tools)
 
             # 匹配已知错误码
             if status in self._ERROR_TIPS:
@@ -622,17 +760,27 @@ class OpenAICompatibleClient(LLMClient):
             })
 
         content = message.get("content", "") or ""
-        # 后端不支持原生 tool_calls、只回 JSON 文本时的兜底
+        # 深度思考模型的思考过程（reasoning_content=百炼/DeepSeek，reasoning=Ollama qwen3）
+        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+        # 后端不支持原生 tool_calls 时的两种文本兜底：
+        #   ① 文本协议模式的 <tool_call>{...}</tool_call> 标记
+        #   ② 模型直接回 function-call JSON
         if not tool_calls and content:
-            parsed = self._parse_json_toolcalls(content)
+            parsed = self._parse_tool_call_tags(content)
+            if not parsed:
+                parsed = self._parse_json_toolcalls(content)
             if parsed:
                 tool_calls = parsed
                 finish_reason = "tool_calls"
+                content = re.sub(
+                    r"<tool_call>.*?</tool_call>", "", content, flags=re.S
+                ).strip()
 
         return ChatResponse(
             text=content,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
+            reasoning=reasoning,
             raw=data,
         )
 
@@ -684,6 +832,107 @@ class OpenAICompatibleClient(LLMClient):
             tool_calls.append({"name": name, "arguments": args})
         return tool_calls or None
 
+    # ============================================================
+    # 文本协议模式（tools-as-text）
+    # 适用于不支持 function calling 的模型（如 deepseek-r1-distill、部分本地模型）：
+    # 工具说明注入 system prompt，模型用 <tool_call> 标记输出调用，客户端解析执行
+    # ============================================================
+
+    @staticmethod
+    def _build_tools_prompt(tools: list[dict]) -> str:
+        """把 OpenAI tools 结构转成注入 system prompt 的紧凑文本说明"""
+        lines = [
+            "# 可用工具",
+            "你可以调用以下工具完成用户任务。需要调用时，严格按此格式输出（一次只调用一个）：",
+            '<tool_call>{"name": "工具名", "arguments": {"参数名": "值"}}</tool_call>',
+            "输出 tool_call 后停下，等待系统返回 <tool_result> 结果，再决定下一步。",
+            "",
+        ]
+        for t in tools:
+            func = t.get("function", {})
+            name = func.get("name", "")
+            desc = func.get("description", "")
+            params = json.dumps(
+                func.get("parameters", {}), ensure_ascii=False, separators=(",", ":")
+            )
+            lines.append(f"- {name}: {desc}")
+            lines.append(f"  参数: {params}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _convert_history_to_text(messages: list[dict]) -> list:
+        """把历史中的 tool_calls / tool 消息转成文本标记形式（文本协议专用）"""
+        out = []
+        for m in messages:
+            if m.get("tool_calls"):
+                blocks = [m.get("content") or ""]
+                for tc in m.get("tool_calls", []):
+                    if "function" in tc:  # OpenAI 原生格式
+                        fname = tc["function"].get("name", "")
+                        fargs = tc["function"].get("arguments", "{}")
+                    else:  # 内部格式 {name, arguments}
+                        fname = tc.get("name", "")
+                        fargs = json.dumps(tc.get("arguments", {}), ensure_ascii=False)
+                    blocks.append(f'<tool_call>{{"name": "{fname}", "arguments": {fargs}}}</tool_call>')
+                out.append({
+                    "role": "assistant",
+                    "content": "\n".join(b for b in blocks if b).strip(),
+                })
+            elif m.get("role") == "tool":
+                content = m.get("content", "")
+                if not isinstance(content, str):
+                    content = json.dumps(content, ensure_ascii=False)
+                out.append({"role": "user", "content": f"<tool_result>{content}</tool_result>"})
+            else:
+                out.append(m)
+        return out
+
+    @staticmethod
+    def _parse_tool_call_tags(text: str) -> list:
+        """解析回复文本中的 <tool_call>{...}</tool_call> 标记"""
+        calls = []
+        for m in re.finditer(
+            r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text or "", flags=re.S
+        ):
+            try:
+                obj = json.loads(m.group(1))
+            except json.JSONDecodeError:
+                continue
+            name = obj.get("name") or obj.get("tool")
+            args = obj.get("arguments")
+            if args is None:
+                args = {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            if isinstance(name, str) and name and isinstance(args, dict):
+                calls.append({"name": name, "arguments": args})
+        return calls
+
+    def _inject_tools_prompt(self, messages: list[dict], tools: list[dict]) -> list:
+        """历史转文本协议格式，并把工具说明注入首条 system 消息"""
+        converted = self._convert_history_to_text(messages)
+        tools_prompt = self._build_tools_prompt(tools)
+        if converted and converted[0].get("role") == "system":
+            converted[0] = dict(converted[0])
+            converted[0]["content"] = (
+                f"{converted[0]['content']}\n\n{tools_prompt}"
+            )
+        else:
+            converted.insert(0, {"role": "system", "content": tools_prompt})
+        return converted
+
+    def _chat_text_protocol(self, messages: list[dict], tools: list[dict]) -> ChatResponse:
+        """
+        文本协议模式：工具说明注入 system prompt，不带 tools 参数请求，
+        响应文本中解析 <tool_call> 标记。复用 chat() 的完整请求/错误处理链路。
+        """
+        converted = self._inject_tools_prompt(messages, tools)
+        _logger.info(f"文本协议模式请求（{len(tools)} 个工具注入 system prompt）")
+        return self.chat(converted, tools=None)
+
     def chat_stream(self, messages: list[dict], tools: list[dict] = None):
         """
         流式调用 OpenAI 兼容 API（SSE），逐 token 产出。
@@ -696,6 +945,19 @@ class OpenAICompatibleClient(LLMClient):
             "Content-Type": "application/json",
         }
 
+        # 运行时自适应（须在构造 body 前处理，否则 body 仍引用旧列表）：
+        # 已知模型不支持 tools 参数 → 文本协议流式；
+        # 已知历史 tool 消息被拒 → 预先清理
+        if tools and self._tools_param_rejected:
+            yield from self.chat_stream(self._inject_tools_prompt(messages, tools), tools=None)
+            return
+        if self._tool_history_rejected and self._has_tool_messages(messages):
+            messages = self._sanitize_tool_messages(messages)
+
+        # 纯对话模式（本地小模型）：忽略工具参数
+        if self.tool_free:
+            tools = None
+
         body = {
             "model": self.model,
             "messages": messages,
@@ -703,10 +965,6 @@ class OpenAICompatibleClient(LLMClient):
             "max_tokens": 4096,
             "stream": True,
         }
-
-        if tools:
-            body["tools"] = tools
-            body["tool_choice"] = "auto"
 
         # token 预算检查
         estimated = sum(len(str(m.get("content", ""))) for m in messages) // 2
@@ -718,6 +976,13 @@ class OpenAICompatibleClient(LLMClient):
                      "请重置对话（/reset）或提高 max_total_tokens 配置。"
             )
             return
+
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+
+        # 百炼服务端工具（enable_search 等，云端透明执行）
+        self._apply_server_tools(body)
 
         try:
             resp = requests.post(
@@ -735,6 +1000,11 @@ class OpenAICompatibleClient(LLMClient):
             )
             return
         except requests.exceptions.HTTPError as e:
+            # 400 工具能力自适应（同 chat()）
+            fallback = self._stream_tool_fallback(e, messages, tools)
+            if fallback is not None:
+                yield from fallback
+                return
             yield self._handle_http_error(e)
             return
         except Exception as e:
@@ -748,7 +1018,18 @@ class OpenAICompatibleClient(LLMClient):
         finish_reason = "stop"
         usage = {}
 
-        for chunk in resp.iter_content(chunk_size=None, decode_unicode=True):
+        # SSE 流必须按 UTF-8 解码。不能用 decode_unicode=True：requests 对无
+        # charset 的 text/event-stream 响应头（Ollama 即如此）会推断成
+        # ISO-8859-1，UTF-8 中文被逐字节解成 'ä½ å¥½' 式乱码。增量解码器
+        # 同时容忍网络块边界切在多字节字符中间的情况。
+        utf8_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        for raw_chunk in resp.iter_content(chunk_size=None):
+            if not raw_chunk:
+                continue
+            if isinstance(raw_chunk, str):
+                chunk = raw_chunk  # 测试桩/个别实现直接给文本
+            else:
+                chunk = utf8_decoder.decode(raw_chunk)
             if not chunk:
                 continue
             buffer += chunk
@@ -776,6 +1057,16 @@ class OpenAICompatibleClient(LLMClient):
                     if not choices:
                         continue
                     delta = choices[0].get("delta", {}) or {}
+
+                    # 思考 token（reasoning_content=百炼/DeepSeek，reasoning=Ollama qwen3）
+                    # 单独走 "reasoning" 通道，前端据此渲染 DeepSeek 式思考过程展示
+                    reasoning_delta = (delta.get("reasoning_content")
+                                       or delta.get("reasoning"))
+                    if reasoning_delta:
+                        yield ChatResponse(
+                            reasoning=reasoning_delta,
+                            finish_reason="reasoning",
+                        )
 
                     # 文本 token
                     content = delta.get("content")
@@ -809,9 +1100,12 @@ class OpenAICompatibleClient(LLMClient):
             self._last_usage = usage
             self.total_tokens_used += usage.get("total_tokens", 0)
 
-        # 纯文本里夹带 function-call JSON 的兜底（后端不支持原生 tool_calls 时）
+        # 纯文本里夹带工具调用的兜底（后端不支持原生 tool_calls 时）：
+        # 优先文本协议 <tool_call> 标记，其次裸 JSON
         if not collected_tool_calls and collected_text.strip():
-            parsed = self._parse_json_toolcalls(collected_text)
+            parsed = self._parse_tool_call_tags(collected_text)
+            if not parsed:
+                parsed = self._parse_json_toolcalls(collected_text)
             if parsed:
                 yield ChatResponse(tool_calls=parsed, finish_reason="tool_calls")
                 return
@@ -833,6 +1127,47 @@ class OpenAICompatibleClient(LLMClient):
                 tool_calls=tool_calls,
                 finish_reason="tool_calls",
             )
+
+    def _stream_tool_fallback(self, e: requests.exceptions.HTTPError,
+                              messages: list, tools: list):
+        """
+        流式请求 HTTPError 时的工具能力自适应。
+        返回重试 generator（调用方 yield from），非工具问题返回 None。
+        """
+        status = e.response.status_code if e.response is not None else None
+        if status != 400:
+            return None
+        detail = ""
+        if e.response is not None:
+            try:
+                detail = e.response.json().get("error", {}).get("message", "")
+            except Exception:
+                detail = e.response.text[:200]
+        detail_l = (detail or "").lower()
+
+        # ① 模型不支持 tools 参数 → 文本协议流式重试
+        if tools and ("tool call is not supported" in detail_l
+                      or "does not support tool" in detail_l
+                      or "tools is not supported" in detail_l):
+            self._tools_param_rejected = True
+            _logger.info(f"模型 {self.model} 不支持 tools 参数，流式自动切换文本协议")
+            return self.chat_stream(self._inject_tools_prompt(messages, tools), tools=None)
+        # ② 历史工具消息被拒 → 清理后流式重试
+        if self._has_tool_messages(messages) and (
+                'role "tool"' in detail_l or "tool_calls" in detail_l
+        ):
+            self._tool_history_rejected = True
+            _logger.info(f"模型 {self.model} 拒收历史工具消息，流式自动清理后重试")
+            return self.chat_stream(self._sanitize_tool_messages(messages), tools=tools)
+        # ③ enable_search 被拒 → 停注后流式重试
+        if self.server_web_search_active and (
+                "enable_search" in detail_l
+                or ("search" in detail_l and "support" in detail_l)
+        ):
+            self._server_search_rejected = True
+            _logger.info(f"模型 {self.model} 拒绝 enable_search，流式停用服务端联网搜索")
+            return self.chat_stream(messages, tools=tools)
+        return None
 
     def _handle_http_error(self, e: requests.exceptions.HTTPError) -> ChatResponse:
         """统一处理 HTTP 错误"""
@@ -873,9 +1208,254 @@ class OpenAICompatibleClient(LLMClient):
         )
 
 
+# ============================================================
+# FailoverClient：多 Provider 自动降级
+# ============================================================
+
+class FailoverClient(LLMClient):
+    """
+    多 Provider 自动降级客户端。
+
+    按优先级依次尝试：
+      1. 主 LLM（如 GPT-4o / DeepSeek / Qwen）
+      2. 备用 LLM（如本地 Ollama 1.5B）[可选]
+      3. 确定性脑（纯规则，零依赖）[最后兜底]
+
+    降级逻辑：
+      - 主 LLM 首次失败后标记为 degraded，后续请求跳过主 LLM
+      - 每 5 分钟自动重试一次主 LLM（ping 恢复后自动升级）
+      - supports_vision 跟随主 LLM
+
+    设计对标：
+      - 微软 UFO² 的 Agent 降级策略
+      - OpenClaw 的 Provider failover 配置
+      - 无需任何 ML 依赖，仅通过 HTTP 请求 Ollama
+    """
+
+    provider = "failover"
+
+    def __init__(
+        self,
+        primary: LLMClient,
+        fallback: Optional[LLMClient] = None,
+        deterministic: Optional[LLMClient] = None,
+    ):
+        self.primary = primary
+        self.fallback = fallback
+        self.deterministic = deterministic or DeterministicBrain()
+        self._current = primary
+        self._degraded = False
+        self._degraded_at = 0.0
+        self._retry_interval = 300  # 5 分钟后自动重试主 LLM
+        self._last_error = ""
+        self._force_local = False  # 手动切换到本地模型模式
+        self.supports_vision = primary.supports_vision
+
+    @property
+    def status(self) -> dict:
+        """返回当前运行状态"""
+        fallback_model = ""
+        if self.fallback and hasattr(self.fallback, "model"):
+            fallback_model = self.fallback.model
+        return {
+            "current_provider": self._current.provider if hasattr(self._current, 'provider') else "unknown",
+            "degraded": self._degraded,
+            "last_error": self._last_error,
+            "next_retry": self._degraded_at + self._retry_interval if self._degraded else 0,
+            "fallback_model": fallback_model,
+            "primary_model": self.primary.model if hasattr(self.primary, "model") else "",
+            "force_local": self._force_local,
+        }
+
+    @property
+    def server_web_search_active(self) -> bool:
+        """服务端联网搜索跟随主 LLM（备用端点通常是本地 Ollama，无此能力）；
+        降级/本地模式下返回 False，agent 层据此还原本地 browser_search 工具。"""
+        if self._degraded or self._force_local:
+            return False
+        return getattr(self.primary, "server_web_search_active", False)
+
+    @property
+    def tool_free_active(self) -> bool:
+        """当前是否处于纯对话模式（本地小模型，不接工具）。
+
+        两种触发：
+          ① 主 LLM 本身声明 tool_free——离线增强模式（无 API key 时
+             本地 Ollama 直接当主 LLM）或用户显式配置；
+          ② 已降级/手动切到本地模型，且备用端点声明 tool_free
+            （本地 URL 默认 true，见 _is_local_url）。
+        agent 据此改用轻量 system prompt 并停止传工具——本地 CPU 模型
+        带 63 个工具 schema 的 prompt eval 实测要 33~150s+，
+        纯对话才是可用体验。
+        """
+        if getattr(self.primary, "tool_free", False):
+            return True
+        if self.fallback is None:
+            return False
+        if not (self._degraded or self._force_local):
+            return False
+        return bool(getattr(self.fallback, "tool_free", False))
+
+    def switch_fallback_model(self, model_name: str) -> bool:
+        """切换备用 LLM 的模型名，运行时热切换，不重建客户端"""
+        if not self.fallback or not hasattr(self.fallback, "model"):
+            return False
+        self.fallback.model = model_name
+        if hasattr(self.fallback, "reset_runtime_flags"):
+            self.fallback.reset_runtime_flags()
+        _logger.info(f"备用 LLM 模型已切换为: {model_name}")
+        return True
+
+    def switch_primary_model(self, model_name: str) -> bool:
+        """切换主 LLM 的模型名，运行时热切换，不重建客户端"""
+        if not hasattr(self.primary, "model"):
+            return False
+        self.primary.model = model_name
+        if hasattr(self.primary, "reset_runtime_flags"):
+            self.primary.reset_runtime_flags()
+        _logger.info(f"主 LLM 模型已切换为: {model_name}")
+        return True
+
+    def force_local_mode(self, enabled: bool = True) -> bool:
+        """手动切换到本地模型模式，跳过主 API 直接用本地 Ollama"""
+        if enabled and not self.fallback:
+            return False
+        self._force_local = enabled
+        if enabled:
+            self._current = self.fallback
+            _logger.info(f"已切换到本地模型模式: {self.fallback.model}")
+        else:
+            self._current = self.primary
+            _logger.info("已切换回主 API 模式")
+        return True
+
+    def _should_retry(self) -> bool:
+        """判断是否该重试主 LLM"""
+        if not self._degraded:
+            return False
+        return time.time() - self._degraded_at >= self._retry_interval
+
+    def _try_chat(self, client: LLMClient, messages: list, tools: list) -> Optional[ChatResponse]:
+        """尝试用指定客户端调用，失败返回 None（不抛异常）"""
+        try:
+            return client.chat(messages, tools=tools)
+        except Exception as e:
+            self._last_error = f"{client.provider}: {e}"
+            _logger.warning(f"LLM fallback: {self._last_error}")
+            return None
+
+    def _try_chat_stream(self, client: LLMClient, messages: list, tools: list):
+        """尝试流式调用，失败返回 None"""
+        try:
+            yield from client.chat_stream(messages, tools=tools)
+        except Exception as e:
+            self._last_error = f"{client.provider}: {e}"
+            _logger.warning(f"LLM fallback stream: {self._last_error}")
+
+    def chat(self, messages: list[dict], tools: list[dict] = None) -> ChatResponse:
+        # 0. 手动切换到本地模型模式：直接走 fallback，不试主 LLM
+        if self._force_local and self.fallback:
+            result = self._try_chat(self.fallback, messages, tools)
+            if result is not None:
+                self._current = self.fallback
+                return result
+            # 本地模型也失败，走确定性脑
+            self._current = self.deterministic
+            return self.deterministic.chat(messages, tools)
+
+        # 1. 尝试主 LLM（降级模式时每 5 分钟自动重试一次）
+        if not self._degraded or self._should_retry():
+            result = self._try_chat(self.primary, messages, tools)
+            if result is not None:
+                if self._degraded:
+                    _logger.info("LLM 主 Provider 已恢复，自动升级")
+                self._degraded = False
+                self._current = self.primary
+                return result
+            if not self._degraded:
+                self._degraded = True
+                self._degraded_at = time.time()
+                self._current = self.fallback or self.deterministic
+                _logger.warning(f"LLM 主 Provider 不可用，降级至 {self._current.provider}")
+
+        # 2. 尝试备用 LLM
+        if self.fallback:
+            result = self._try_chat(self.fallback, messages, tools)
+            if result is not None:
+                self._current = self.fallback
+                return result
+            self._current = self.deterministic
+
+        # 3. 最后兜底：确定性脑
+        return self.deterministic.chat(messages, tools)
+
+    def chat_stream(self, messages: list[dict], tools: list[dict] = None):
+        """流式版本的自动降级"""
+        # 0. 手动切换到本地模型模式：直接走 fallback，不试主 LLM
+        #    （与 chat() 的 force_local 分支对齐，否则手动切本地后流式仍会打主 API）
+        if self._force_local and self.fallback:
+            try:
+                for chunk in self.fallback.chat_stream(messages, tools=tools):
+                    yield chunk
+                self._current = self.fallback
+                return
+            except Exception as e:
+                self._last_error = f"{self.fallback.provider}: {e}"
+            for chunk in self.deterministic.chat_stream(messages, tools=tools):
+                yield chunk
+            return
+
+        # 1. 尝试主 LLM
+        if not self._degraded or self._should_retry():
+            collected = []
+            try:
+                for chunk in self.primary.chat_stream(messages, tools=tools):
+                    collected.append(chunk)
+                    yield chunk
+                if self._degraded:
+                    _logger.info("LLM 主 Provider 已恢复，自动升级")
+                self._degraded = False
+                self._current = self.primary
+                return
+            except Exception as e:
+                self._last_error = f"{self.primary.provider}: {e}"
+                if not self._degraded:
+                    self._degraded = True
+                    self._degraded_at = time.time()
+                    self._current = self.fallback or self.deterministic
+                    _logger.warning(f"LLM 主 Provider 流式不可用，降级至 {self._current.provider}")
+
+        # 2. 尝试备用 LLM
+        if self.fallback:
+            try:
+                for chunk in self.fallback.chat_stream(messages, tools=tools):
+                    yield chunk
+                self._current = self.fallback
+                return
+            except Exception as e:
+                self._last_error = f"{self.fallback.provider}: {e}"
+
+        # 3. 确定性脑
+        for chunk in self.deterministic.chat_stream(messages, tools=tools):
+            yield chunk
+
+
+# ============================================================
+# 工厂函数
+# ============================================================
+
 def create_llm_client(config: dict) -> LLMClient:
     """
     工厂函数：根据配置创建 LLM 客户端
+
+    支持自动降级：
+      配置 llm.fallback 段后，自动包装为 FailoverClient。
+      优先级：主 LLM → 备用 LLM → 确定性脑
+
+    离线模式增强：
+      provider=deterministic 但配置了 fallback（如本地 Ollama）时，
+      自动尝试使用 Ollama 模型作为主 LLM，确定性脑作为最后兜底。
+      这样用户即使没有 API key，也能用本地模型获得更好的体验。
 
     用法：
         cfg = load_config()
@@ -884,22 +1464,83 @@ def create_llm_client(config: dict) -> LLMClient:
     llm_cfg = config.get("llm", {})
     provider = llm_cfg.get("provider", "deterministic")
 
+    # 联网搜索总开关（顶层 web_search.enabled，默认开）→ 转成主 LLM 的服务端工具配置；
+    # 仅百炼端点实际生效（OpenAICompatibleClient.is_bailian 检查），fallback 客户端不带
+    web_search_on = bool(config.get("web_search", {}).get("enabled", True))
+    if isinstance(llm_cfg, dict):
+        llm_cfg = dict(llm_cfg)
+    else:
+        llm_cfg = {}
+    llm_cfg["server_tools"] = {"web_search": web_search_on}
+
+    # 检查是否有 fallback 配置
+    fallback_cfg = llm_cfg.get("fallback", {})
+
+    if provider == "deterministic" and fallback_cfg and fallback_cfg.get("provider"):
+        # 离线模式增强：用本地 Ollama 模型替代确定性脑
+        _logger.info("离线模式检测到备用 LLM 配置，尝试使用本地模型")
+        fallback = _build_single_client(
+            fallback_cfg.get("provider", "openai_compatible"),
+            fallback_cfg,
+        )
+        # 构造 FailoverClient：主 LLM = 备用模型，确定性脑作为最后兜底
+        deterministic = DeterministicBrain()
+        return FailoverClient(primary=fallback, fallback=deterministic)
+
+    # 创建主 LLM
+    primary = _build_single_client(provider, llm_cfg)
+    if isinstance(primary, DeterministicBrain):
+        return primary  # 纯离线模式，无 fallback 配置
+
+    if not fallback_cfg or not fallback_cfg.get("provider"):
+        return primary  # 没有 fallback 配置，直接返回主 LLM
+
+    fallback = _build_single_client(
+        fallback_cfg.get("provider", "openai_compatible"),
+        fallback_cfg,
+    )
+    if isinstance(fallback, DeterministicBrain):
+        fallback = None  # 同级already have deterministic as ultimate fallback
+
+    return FailoverClient(primary=primary, fallback=fallback)
+
+
+def _is_local_url(url: str) -> bool:
+    """判断 base_url 是否指向本机（本地 Ollama 等）。
+
+    本地端点默认纯对话模式（tool_free=true）：CPU 推理慢，带全套工具
+    schema 的 prompt eval 实测 33~150s+，只做日常对话才是可用体验。
+    可在 config 的 llm / llm.fallback 段用 tool_free 显式覆盖。
+    """
+    u = (url or "").lower()
+    return any(h in u for h in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]"))
+
+
+def _build_single_client(provider: str, cfg: dict) -> LLMClient:
+    """
+    根据 provider 类型创建单个 LLM 客户端（不包装降级）。
+    内部使用，外部请用 create_llm_client()。
+    """
     if provider == "deterministic":
         return DeterministicBrain()
 
     if provider == "openai_compatible":
-        base_url = llm_cfg.get("base_url", "")
-        model = llm_cfg.get("model", "")
-        # 百炼（DashScope）没填 model 时默认 qwen-plus，避免拿默认 gpt-4o-mini 去请求 403
+        base_url = cfg.get("base_url", "")
+        model = cfg.get("model", "")
         if not model and "dashscope" in base_url:
             model = "qwen-plus"
         return OpenAICompatibleClient(
             base_url=base_url,
-            api_key=llm_cfg.get("api_key", ""),
+            api_key=cfg.get("api_key", ""),
             model=model,
-            supports_vision=llm_cfg.get("supports_vision", False),
-            timeout=llm_cfg.get("timeout", 60),
-            max_total_tokens=llm_cfg.get("max_total_tokens", 0),
+            supports_vision=cfg.get("supports_vision", False),
+            timeout=cfg.get("timeout", 60),
+            max_total_tokens=cfg.get("max_total_tokens", 0),
+            # 由 create_llm_client 按顶层 web_search.enabled 预置；直连构造时缺省为空（不启用）
+            server_tools=cfg.get("server_tools", {}),
+            # 纯对话模式：本地端点默认开（实测 CPU 模型带工具的 prompt eval 过慢），
+            # 可在 config 对应段落用 tool_free 显式覆盖
+            tool_free=bool(cfg.get("tool_free", _is_local_url(base_url))),
         )
 
     raise ValueError(f"不支持的 LLM provider: {provider}，可选: deterministic, openai_compatible")
