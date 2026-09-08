@@ -210,8 +210,9 @@ class Agent:
         # 多会话管理器
         storage_dir = memory_cfg.get("storage_dir", "conversations")
         self.sessions = SessionManager(storage_dir=storage_dir)
+        # 历史全部载入内存（供 Web 侧栏浏览/切换/删除），然后新开一个空对话作为当前会话
         self.sessions.load_all()
-        self.sessions.ensure_current()
+        self.sessions.create()
 
         # 过程产物根目录：截图等 Agent/技能产生的工件独立存放（不混进对话记录与项目代码），
         # 便于同一任务内被下一个技能/工具复用，也便于按会话一句话清理。

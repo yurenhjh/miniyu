@@ -285,46 +285,68 @@ HTML = r"""<!DOCTYPE html>
 	    padding: 8px;
 	  }
 	  .session-item {
-	    padding: 10px 12px;
-	    border-radius: 8px;
-	    cursor: pointer;
-	    margin-bottom: 4px;
-	    transition: background 0.15s;
-	    display: flex;
-	    justify-content: space-between;
-	    align-items: center;
-	  }
-	  .session-item:hover { background: rgba(255,255,255,0.05); }
-	  .session-item.active {
-	    background: var(--card);
-	    border-left: 3px solid var(--accent);
-	  }
-	  .session-item-title {
-	    font-size: 13px;
-	    font-weight: 500;
-	    white-space: nowrap;
-	    overflow: hidden;
-	    text-overflow: ellipsis;
-	    flex: 1;
-	  }
-	  .session-item-meta {
-	    font-size: 11px;
-	    color: var(--text-secondary);
-	    margin-left: 8px;
-	    white-space: nowrap;
-	  }
-	  .session-item .delete-btn {
-	    display: none;
-	    background: none;
-	    border: none;
-	    color: var(--danger);
-	    cursor: pointer;
-	    font-size: 14px;
-	    padding: 2px 6px;
-	    border-radius: 4px;
-	  }
-	  .session-item:hover .delete-btn { display: block; }
-	  .session-item .delete-btn:hover { background: rgba(239,68,68,0.15); }
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    margin-bottom: 4px;
+    transition: background 0.15s;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+  }
+  .session-item:hover { background: rgba(255,255,255,0.05); }
+  .session-item.active {
+    background: var(--card);
+    border-left: 3px solid var(--accent);
+  }
+  .session-item-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    min-width: 0;
+  }
+  .session-item-title {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+  }
+  .session-item-sub {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .session-item .delete-btn {
+    display: none;
+    background: none;
+    border: none;
+    color: var(--danger);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+  .session-item:hover .delete-btn { display: block; }
+  .session-item .delete-btn:hover { background: rgba(239,68,68,0.15); }
+  .session-more {
+    padding: 9px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: center;
+    font-size: 12px;
+    color: var(--accent);
+    margin-top: 2px;
+    transition: background 0.15s;
+  }
+  .session-more:hover { background: rgba(255,255,255,0.05); }
 	  /* 主区域 */
 	  .main {
 	    flex: 1;
@@ -577,7 +599,29 @@ HTML = r"""<!DOCTYPE html>
 	    cursor: pointer;
 	  }
 	  .input-area button:hover { opacity: 0.85; }
-	  .input-area button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .input-area button:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* 语音输入按钮：位于输入框左侧，缩小输入框留出位置；倾听中红色脉动 */
+  .input-area .mic-btn {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0;
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+  }
+  .input-area .mic-btn:hover { border-color: var(--accent); }
+  .input-area .mic-btn.listening {
+    background: #e5484d;
+    border-color: #e5484d;
+    color: white;
+    animation: stop-pulse 1.2s ease-in-out infinite;
+  }
 	  /* 生成中的"停止"按钮：红色高亮，DeepSeek 式打断 */
 	  .input-area button.stop-mode {
 	    background: #e5484d;
@@ -604,7 +648,51 @@ HTML = r"""<!DOCTYPE html>
 	  .dot:nth-child(2) { animation-delay: 0.2s; }
 	  .dot:nth-child(3) { animation-delay: 0.4s; }
 	  @keyframes bounce { 0%,80%,100% { transform: scale(0.6); } 40% { transform: scale(1); } }
-	  .modal-overlay {
+              /* 思考面板：回复完成后默认折叠为一行标题；点标题展开/再点收起；
+                 展开后内容限高固定，超出部分在框内滑动查看（DeepSeek/Trae 式） */
+              .message.thinking {
+                max-width: 92%;
+                align-self: flex-start;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-left: 3px solid var(--accent);
+                border-radius: 8px;
+                padding: 0;
+                width: 100%;
+              }
+              .thinking-header {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 8px 12px;
+                cursor: pointer;
+                user-select: none;
+                font-size: 13px;
+                color: var(--text-secondary);
+                border-radius: 8px;
+              }
+              .thinking-header:hover { background: rgba(255,255,255,0.05); }
+              .thinking-label { font-weight: 600; color: var(--accent); }
+              .thinking-time { font-size: 12px; opacity: 0.85; }
+              .thinking-toggle {
+                margin-left: auto;
+                font-size: 10px;
+                transition: transform 0.2s ease;
+                color: var(--text-secondary);
+              }
+              .message.thinking:not(.collapsed) .thinking-toggle { transform: rotate(180deg); }
+              .thinking-content {
+                max-height: 300px;   /* 展开后最大显示高度，超出可滑动 */
+                overflow-y: auto;
+                padding: 0 12px 10px;
+                font-size: 12px;
+                line-height: 1.6;
+                color: var(--text-secondary);
+                white-space: pre-wrap;
+                word-break: break-word;
+              }
+              .message.thinking.collapsed .thinking-content { display: none; }
+              .modal-overlay {
 	    display: none;
 	    position: fixed;
 	    top: 0; left: 0; right: 0; bottom: 0;
@@ -691,6 +779,7 @@ HTML = r"""<!DOCTYPE html>
 	  <span style="margin-left:8px;">miniyu 思考中...</span>
 	</div>
 	<div class="input-area">
+	  <button id="mic-btn" class="mic-btn" onclick="toggleVoice()" title="语音输入：点击开始倾听，再次点击关闭（浏览器语音识别，需 Chrome/Edge）">🎤</button>
 	  <input type="text" id="input" placeholder="输入指令，例如：整理桌面、磁盘空间、查看进程..."
 	         onkeydown="if(event.key==='Enter') send()" autofocus>
 	  <button id="send-btn" onclick="send()">发送</button>
@@ -729,21 +818,96 @@ HTML = r"""<!DOCTYPE html>
 	}
 	
 	function setLoading(loading) {
-	  document.getElementById('input').disabled = loading;
-	  const btn = document.getElementById('send-btn');
-	  if (loading) {
-	    // 生成中：按钮变"停止"，可点击打断（不 disable——否则没法停）
-	    btn.disabled = false;
-	    btn.textContent = '⏹ 停止';
-	    btn.classList.add('stop-mode');
-	  } else {
-	    btn.disabled = false;
-	    btn.textContent = '发送';
-	    btn.classList.remove('stop-mode');
-	    delete btn.dataset.stopping;
-	  }
-	  document.getElementById('typing').classList.toggle('active', loading);
-	}
+  document.getElementById('input').disabled = loading;
+  const btn = document.getElementById('send-btn');
+  if (loading) {
+    // 生成中：按钮变"停止"，可点击打断（不 disable——否则没法停）
+    btn.disabled = false;
+    btn.textContent = '⏹ 停止';
+    btn.classList.add('stop-mode');
+  } else {
+    btn.disabled = false;
+    btn.textContent = '发送';
+    btn.classList.remove('stop-mode');
+    delete btn.dataset.stopping;
+  }
+  // 生成中禁止语音输入（避免识别结果与流式输出打架）
+  const mic = document.getElementById('mic-btn');
+  if (mic) mic.disabled = loading;
+  document.getElementById('typing').classList.toggle('active', loading);
+}
+
+// ===== 语音输入（浏览器原生 Web Speech API，零后端）=====
+// Chrome/Edge 支持；Chrome 底层走 Google 服务（大陆常连不上）、Edge 走微软 Azure 服务（大陆可用）。
+// localhost 属安全上下文，免 HTTPS。不支持或服务不可用时给出明确提示并回退文字输入。
+// 行为约定：continuous=true 持续倾听（停顿不结束，点 🎤 才关闭）；识别结果「追加」在输入框已有
+// 内容之后（多次语音输入不互相覆盖）；onresult 全量重算保证幂等（e.results 累计不重复）。
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let listening = false;
+let _voiceBase = '';   // 本次倾听开始前输入框已有的内容（作为追加基础）
+const _INPUT_PLACEHOLDER = '输入指令，例如：整理桌面、磁盘空间、查看进程...';
+
+function initVoice() {
+  const mic = document.getElementById('mic-btn');
+  if (!mic) return;
+  if (!SpeechRecognition) {
+    mic.style.display = 'none';   // 浏览器不支持：干脆不显示按钮
+    return;
+  }
+  recognition = new SpeechRecognition();
+  recognition.lang = 'zh-CN';
+  recognition.continuous = true;       // 持续倾听：说话停顿不结束，点 🎤 关闭才停
+  recognition.interimResults = true;   // 边说边出候选文字
+  recognition.onresult = (e) => {
+    // 全量重算：已定稿(final)拼进正文、未定稿(interim)临时显示；e.results 累计不重复所以幂等
+    let finalText = '';
+    let interimText = '';
+    for (let i = 0; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
+      else interimText += e.results[i][0].transcript;
+    }
+    const input = document.getElementById('input');
+    input.value = _voiceBase + finalText + interimText;
+    input.focus();
+  };
+  recognition.onend = stopVoiceUI;
+  recognition.onerror = (err) => {
+    stopVoiceUI();
+    const msg = ({
+      'not-allowed': '麦克风权限被拒绝：请点浏览器地址栏左侧的 🔒 图标，允许麦克风后重试',
+      'no-speech': '没听到声音：点击 🎤 后请靠近麦克风说话',
+      'network': '浏览器语音服务不可用（语音识别依赖云端服务）：请检查网络，或换 Edge 浏览器，或直接文字输入',
+      'audio-capture': '找不到可用的麦克风设备',
+    })[err.error];
+    if (msg) showToast(msg, false);
+  };
+  mic.style.display = 'flex';
+}
+
+function toggleVoice() {
+  if (!recognition || listening) { if (recognition) recognition.stop(); return; }
+  const input = document.getElementById('input');
+  _voiceBase = input.value;   // 保留已有内容（含上次语音结果/手动打字），识别结果追加其后
+  input.placeholder = '🎤 正在倾听，请说话…（停顿不结束，点击 🎤 关闭）';
+  listening = true;
+  const mic = document.getElementById('mic-btn');
+  mic.classList.add('listening');
+  mic.title = '正在倾听…（点击关闭）';
+  try { recognition.start(); }
+  catch (e) { showToast('语音识别启动失败，请重试或改用文字输入', false); stopVoiceUI(); }
+}
+
+function stopVoiceUI() {
+  listening = false;
+  const mic = document.getElementById('mic-btn');
+  if (mic) {
+    mic.classList.remove('listening');
+    mic.title = '语音输入：点击开始倾听，再次点击关闭';
+  }
+  const input = document.getElementById('input');
+  if (input) input.placeholder = _INPUT_PLACEHOLDER;
+}
 	
 	function scrollToBottom() {
 	  const c = document.getElementById('chat');
@@ -769,29 +933,66 @@ HTML = r"""<!DOCTYPE html>
 	// 会话管理
 	// ============================================================
 	
-	async function refreshSessions() {
-	  try {
-	    const resp = await fetch('/sessions');
-	    const sessions = await resp.json();
-	    const list = document.getElementById('session-list');
-	    list.innerHTML = '';
-	    sessions.forEach(s => {
-	      const item = document.createElement('div');
-	      item.className = 'session-item' + (s.is_current ? ' active' : '');
-	      item.innerHTML = `
-	        <span class="session-item-title">${s.title}</span>
-	        <span class="session-item-meta">${s.message_count}条</span>
-	        <button class="delete-btn" onclick="event.stopPropagation();deleteSession('${s.id}')">×</button>
-	      `;
-	      item.onclick = () => switchSession(s.id);
-	      list.appendChild(item);
-	    });
-	    document.getElementById('session-badge').textContent = '会话: ' + sessions.length;
+	// 侧栏初始渲染上限：历史对话太多时先显示最近 20 条，点"加载更多"再展开全部
+const SIDEBAR_SHOW = 20;
+let _allSessions = [];
+
+// HTML 转义：会话标题来自用户输入，直接 innerHTML 会踩 XSS
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+// 把会话最后更新时间格式化为可读文本（今天的显示"今天 HH:mm"，更早显示日期）
+function fmtTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  const hm = pad(d.getHours()) + ':' + pad(d.getMinutes());
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return '今天 ' + hm;
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + hm;
+}
+
+async function refreshSessions() {
+  try {
+    const resp = await fetch('/sessions');
+    _allSessions = await resp.json();
+    renderSessions(_allSessions.slice(0, SIDEBAR_SHOW), _allSessions.length, true);
     updateStatus(); // 每次会话列表刷新后同步 在线/离线与模型 徽章（函数声明会提升，可提前调用）
-	  } catch (e) {
-	    console.error('Failed to load sessions:', e);
-	  }
-	}
+  } catch (e) {
+    console.error('Failed to load sessions:', e);
+  }
+}
+
+function renderSessions(sessions, total, hasMore) {
+  const list = document.getElementById('session-list');
+  list.innerHTML = '';
+  sessions.forEach(s => {
+    const item = document.createElement('div');
+    item.className = 'session-item' + (s.is_current ? ' active' : '');
+    const title = s.title ? s.title : '新对话';
+    const timeText = fmtTime(s.updated_at);
+    item.innerHTML = `
+      <div class="session-item-title-row">
+        <span class="session-item-title">${escapeHtml(title)}</span>
+        <button class="delete-btn" onclick="event.stopPropagation();deleteSession('${s.id}')">×</button>
+      </div>
+      <div class="session-item-sub">${timeText} · ${s.message_count}条</div>
+    `;
+    item.onclick = () => switchSession(s.id);
+    list.appendChild(item);
+  });
+  document.getElementById('session-badge').textContent = '会话: ' + total;
+  if (hasMore && sessions.length < total) {
+    const more = document.createElement('div');
+    more.className = 'session-more';
+    more.textContent = '加载更多历史（' + (total - sessions.length) + ' 条）';
+    more.onclick = () => renderSessions(_allSessions, _allSessions.length, false);
+    list.appendChild(more);
+  }
+}
 	
 	async function newSession() {
 	  try {
@@ -806,18 +1007,23 @@ HTML = r"""<!DOCTYPE html>
 	}
 	
 	async function switchSession(sessionId) {
-	  try {
-	    const resp = await fetch('/sessions/' + sessionId, { method: 'POST' });
-	    const data = await resp.json();
-	    if (data.success) {
-	      clearMessages();
-	      addMessage('已切换到会话: ' + data.title, 'system');
-	      await refreshSessions();
-	    }
-	  } catch (e) {
-	    console.error('Failed to switch session:', e);
-	  }
-	}
+  try {
+    const resp = await fetch('/sessions/' + sessionId, { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      clearMessages();
+      if (data.messages && data.messages.length) {
+        addMessage('—— 历史对话：' + data.title + ' ——', 'system');
+        data.messages.forEach(m => {
+          addMessage(m.content, m.role === 'user' ? 'user' : 'bot');
+        });
+      }
+      await refreshSessions();
+    }
+  } catch (e) {
+    console.error('Failed to switch session:', e);
+  }
+}
 	
 	async function deleteSession(sessionId) {
 	  if (!confirm('确定删除此会话？')) return;
@@ -1442,6 +1648,7 @@ function selectModel(value, label) {
 		  }
 		  refreshSessions();
 		  loadModels();
+		  initVoice();   // 浏览器支持则显示 🎤 语音输入按钮
 		});
 
 		// 绑定模型搜索输入框事件
@@ -1976,7 +2183,19 @@ def switch_session(session_id):
             return jsonify({"error": "Agent 未初始化"}), 400
         if _agent.switch_session(session_id):
             current = _agent.conversation
-            return jsonify({"success": True, "session_id": session_id, "title": current.title, "message_count": current.total_messages})
+            # 抽取该会话的可读消息（user/assistant 正文；跳过工具调用/过程/系统行），
+            # 前端据此把历史对话渲染回聊天区
+            messages = []
+            for m in current.messages:
+                role, content = m.get("role"), m.get("content")
+                if role not in ("user", "assistant") or not content or m.get("tool_calls"):
+                    continue
+                messages.append({"role": role, "content": content})
+            return jsonify({
+                "success": True, "session_id": session_id,
+                "title": current.title, "message_count": current.total_messages,
+                "messages": messages,
+            })
         return jsonify({"error": "会话不存在"}), 404
 
 

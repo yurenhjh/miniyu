@@ -7,6 +7,7 @@ conversation.py
 """
 
 import json
+import re
 import time
 from typing import Optional
 
@@ -191,11 +192,17 @@ class Conversation:
     # ============================================================
 
     def _auto_title(self, first_message: str):
-        """从首条消息自动生成会话标题"""
-        # 取前 20 个字符作为标题
-        title = first_message.strip()[:20]
-        if len(first_message) > 20:
-            title += "…"
+        """从首条用户消息自动生成会话标题。
+
+        策略：取第一句（首个停顿标点前的内容）做标题，更像"摘要"而非硬切；
+        超过 20 字符截断加 …；不依赖 LLM（离线/确定性脑也能用）。
+        """
+        text = first_message.strip().replace("\r", " ").replace("\n", " ")
+        # 首个句子停顿标点前的内容（。！？，；、：…等，含半角）
+        cut = re.split(r"[。！？!?，,；;、：:…]", text, maxsplit=1)[0].strip()
+        title = cut or text
+        if len(title) > 20:
+            title = title[:20] + "…"
         self.title = title
 
     def set_title(self, title: str):
@@ -280,6 +287,15 @@ class Conversation:
         conv = cls(window_size=data.get("window_size", 20))
         conv.messages = data.get("messages", [])
         conv.title = data.get("title", "")
+        # 迁移：旧版默认标题"新对话"（或空）→ 用首条用户消息重生成，让历史侧栏可辨识
+        if not conv.title or conv.title == "新对话":
+            first_user = next(
+                (m.get("content") for m in conv.messages
+                 if m.get("role") == "user" and m.get("content")),
+                "",
+            )
+            if first_user:
+                conv._auto_title(first_user)
         conv.summary = data.get("summary", "")
         conv.created_at = data.get("created_at", time.time())
         conv.updated_at = data.get("updated_at", time.time())
@@ -352,20 +368,24 @@ class SessionManager:
         """
         创建新会话。
         对标 ChatGPT 的 "New Chat" 功能。
+        标题默认留空：第一条用户消息到达时由 _auto_title 自动生成
+        （用首句话做标题，侧栏在首条消息前显示"新对话"兜底）。
         """
         import uuid
         session_id = str(uuid.uuid4())[:8]
         conv = Conversation()
-        conv.title = title or "新对话"
+        conv.title = title
         self._sessions[session_id] = conv
         self._current_id = session_id
         self._save(session_id)
         return session_id
 
     def switch(self, session_id: str) -> bool:
-        """切换到指定会话"""
+        """切换到指定会话（刷新其"最近访问"时间，历史侧栏按此排序靠前）"""
         if session_id in self._sessions:
             self._current_id = session_id
+            self._sessions[session_id].updated_at = time.time()
+            self._save(session_id)
             return True
         return False
 

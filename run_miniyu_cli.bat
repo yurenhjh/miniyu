@@ -1,20 +1,26 @@
 @echo off
-chcp 65001 >nul
+rem miniyu - Desktop AI Assistant (Terminal UI)
+rem Note: keep this file pure ASCII. cmd.exe parses .bat as the legacy
+rem codepage (GBK on Chinese Windows) BEFORE chcp takes effect, so any
+rem UTF-8 Chinese in this file would garble. English only avoids encoding
+rem issues entirely.
+title miniyu - Desktop AI Assistant (Terminal UI)
+
+cd /d "%~dp0"
+
+echo =============================================
+echo   miniyu - Desktop AI Assistant (CLI)
+echo =============================================
 echo.
-echo  =============================================
-echo   miniyu — 桌面 AI 助手（终端界面）
-echo  =============================================
+echo   First run? Install dependencies:
+echo     pip install -r requirements.txt
 echo.
-echo  首次使用请先安装依赖：pip install -r requirements.txt
+echo   To use a real LLM, edit config.yaml first:
+echo     llm.provider: openai_compatible
+echo     llm.base_url / llm.api_key / llm.model
+echo   (or set AGENT_LLM_* env vars, see config.yaml comments)
 echo.
-echo  如需使用真实 LLM，设置环境变量后再运行：
-echo    set AGENT_LLM_PROVIDER=openai_compatible
-echo    set AGENT_LLM_BASE_URL=https://api.openai.com/v1
-echo    set AGENT_LLM_API_KEY=sk-xxxx
-echo    set AGENT_LLM_MODEL=gpt-4o-mini
+echo   No config = deterministic offline mode (works on any machine)
 echo.
-echo  不配置即使用离线模式（零依赖，任何机器都能跑）
-echo.
-pause
 python examples\agent_cli.py
 pause
