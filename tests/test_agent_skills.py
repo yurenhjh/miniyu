@@ -3,7 +3,7 @@ test_agent_skills.py
 第4组：Agent 白名单组合技能 —— “模型可调函数”接线 + 发送类 OCR 默认门
 
 背景（为什么有这层）：
-    Agent 原本只把 ToolRegistry 的 57 个底层工具暴露给 LLM（list_tools_openai），
+    Agent 原本只把 ToolRegistry 的 59 个底层工具暴露给 LLM（list_tools_openai），
     昨天做好的“QQ 搜索+发送”是 SkillLibrary 技能 app_send_message，模型看不见也调不到，
     只能退化成激活窗口+输字的零散原语、可能发错会话。本测试锁定“技能被当成一个
     函数暴露给模型、经 _execute_one 走技能分发、且发送默认带 OCR 门”这条新链路。
@@ -155,14 +155,14 @@ class TestAgentSkillExposure(unittest.TestCase):
         self.assertEqual(len(api.list_skills_openai()), 5)
 
     def test_agent_toolset_includes_skill(self):
-        """模型拿到的是 57 个底层工具 + 5 个白名单技能（总数 62）"""
+        """模型拿到的是 59 个底层工具 + 5 个白名单技能（总数 64）"""
         with tempfile.TemporaryDirectory(prefix="mini_ats_") as tmp:
             agent = Agent(config=_cfg(tmp))
             registry = agent.api.list_tools_openai()
             merged = registry + agent.api.list_skills_openai()
             names = [t["function"]["name"] for t in merged]
-        self.assertEqual(len(registry), 57)                 # registry 本身不变
-        self.assertEqual(len(names), 62)
+        self.assertEqual(len(registry), 59)                 # registry 本身不变
+        self.assertEqual(len(names), 64)
         self.assertIn("app_send_message", names)
         self.assertIn("send_email", names)
         self.assertIn("read_qq_chat", names)

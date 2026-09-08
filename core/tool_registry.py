@@ -9,6 +9,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -120,6 +121,8 @@ class ToolRegistry:
         self.register("find_old_files", self.find_old_files)
         self.register("find_large_files", self.find_large_files)
         self.register("search_files", self.search_files)
+        self.register("search_in_files", self.search_in_files)
+        self.register("edit_file", self.edit_file)
 
         # 图片（需 Pillow）
         self.register("get_image_metadata", self.get_image_metadata)
@@ -1408,6 +1411,150 @@ class ToolRegistry:
                     break
 
         return results
+
+    def search_in_files(self, root, keyword, include_exts=None, max_results=20, timeout=10):
+        """
+        在目录内的文本文件中搜索关键词/正则（内容搜索，区别于 search_files 的文件名搜索）
+
+        参数：
+            root:         搜索根目录（绝对路径）
+            keyword:      要搜索的关键词或正则表达式（如 "def search_in_files"、"TODO"、"报错关键字"）
+            include_exts: 限定文件扩展名列表（如 [".py", ".js"]）；None（默认）自动跳过
+                          二进制与常见无关目录（.git/node_modules/venv/__pycache__ 等）
+            max_results:  结果数量上限，默认 20
+            timeout:      最大搜索时间（秒），默认 10
+
+        返回：
+            {"count": 命中总数, "results": [{"path", "line_no", "line", "match"}, ...]}
+        """
+        d = Path(root).expanduser()
+        if not d.exists():
+            raise FileNotFoundError(d)
+        if not keyword:
+            raise ValueError("keyword 不能为空")
+
+        try:
+            pattern = re.compile(keyword, re.IGNORECASE)
+        except re.error as e:
+            raise ValueError(f"keyword 不是有效的正则表达式：{e}（想搜普通文本时直接输入文字即可）")
+
+        skip_dirs = {".git", ".svn", ".hg", "__pycache__", "node_modules",
+                     "venv", ".venv", "dist", "build", ".idea", ".vscode",
+                     ".mypy_cache", ".pytest_cache", ".next", "site-packages"}
+        exts = None
+        if include_exts:
+            exts = {e.lower() if e.startswith(".") else "." + e.lower() for e in include_exts}
+
+        results = []
+        start = time.time()
+        for p in d.rglob("*"):
+            if time.time() - start > timeout:
+                break
+            if p.is_dir():
+                continue
+            if any(part in skip_dirs for part in p.parts):
+                continue
+            if exts is not None and p.suffix.lower() not in exts:
+                continue
+            try:
+                if p.stat().st_size > 2 * 1024 * 1024:
+                    continue
+                with open(p, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            except UnicodeDecodeError:
+                try:
+                    with open(p, "r", encoding="gbk", errors="replace") as f:
+                        lines = f.readlines()
+                except (OSError, PermissionError):
+                    continue
+            except (OSError, PermissionError):
+                continue
+            for i, line in enumerate(lines, 1):
+                m = pattern.search(line)
+                if m:
+                    results.append({
+                        "path": str(p.absolute()),
+                        "line_no": i,
+                        "line": line.rstrip("\r\n"),
+                        "match": m.group(0),
+                    })
+                    if len(results) >= max_results:
+                        return {"count": len(results), "results": results}
+        return {"count": len(results), "results": results}
+
+    def edit_file(self, path, old_text, new_text, occurrence=1):
+        """
+        局部编辑文本文件：查找一段原文并精确替换（比整文件重写更安全）
+
+        参数：
+            path:       要编辑的文件路径
+            old_text:   要查找的原文，必须与文件内容**逐字一致**（含缩进/空格/换行），
+                        可先用 read_text_file 读取文件核对原文
+            new_text:   替换成的新文本（传空串表示删除该段）
+            occurrence: 替换第几处匹配，默认 1（第一处）；"all" 或 -1 表示全部替换
+
+        返回：
+            {"path", "replaced": 替换次数, "summary": 编辑位置摘要}
+        """
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(p)
+        if not old_text:
+            raise ValueError("old_text 不能为空")
+
+        encoding = None
+        content = None
+        for enc in ("utf-8", "utf-8-sig", "gbk"):
+            try:
+                with open(p, "r", encoding=enc) as f:
+                    content = f.read()
+                encoding = enc
+                break
+            except UnicodeDecodeError:
+                continue
+        if encoding is None:
+            raise ValueError("无法识别的文本编码（非 UTF-8 / GBK），请确认是文本文件")
+
+        count = content.count(old_text)
+        if count == 0:
+            raise ValueError(
+                f"old_text 在文件中未找到。请确保 old_text 与文件内容逐字一致"
+                "（含缩进、空格、换行），可先用 read_text_file 读取文件核对原文。")
+        first_start = content.find(old_text)
+
+        if occurrence in ("all", -1):
+            new_content = content.replace(old_text, new_text)
+            replaced = count
+        else:
+            try:
+                occ = int(occurrence)
+            except (TypeError, ValueError):
+                raise ValueError("occurrence 必须是正整数、-1 或 'all'")
+            if occ < 1:
+                raise ValueError("occurrence 必须是正整数、-1 或 'all'")
+            if occ > count:
+                raise ValueError(f"occurrence={occ} 超出匹配次数（文件中共 {count} 处）")
+            idx = 0
+            for _ in range(occ):
+                idx = content.find(old_text, idx) + 1
+            start = idx - 1
+            new_content = content[:start] + new_text + content[start + len(old_text):]
+            replaced = 1
+
+        with open(p, "w", encoding=encoding) as f:
+            f.write(new_content)
+
+        line_no = content.count("\n", 0, first_start) + 1
+        line_start = content.rfind("\n", 0, first_start) + 1
+        line_end = content.find("\n", first_start)
+        if line_end == -1:
+            line_end = len(content)
+        snippet = content[line_start:line_end].strip()[:120]
+        return {
+            "path": str(p.absolute()),
+            "replaced": replaced,
+            "summary": f"第 {line_no} 行：{snippet}",
+        }
 
     # =====================================================
     # 新增：图片（需 Pillow）

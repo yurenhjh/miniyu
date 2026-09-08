@@ -60,6 +60,8 @@ class MockToolRegistry:
         self.register("find_old_files", self._find_old_files)
         self.register("find_large_files", self._find_large_files)
         self.register("search_files", self._search_files)
+        self.register("search_in_files", self._search_in_files)
+        self.register("edit_file", self._edit_file)
 
         # 图片
         self.register("get_image_metadata", self._get_image_metadata)
@@ -316,6 +318,24 @@ class MockToolRegistry:
             {"path": f"{path}/found_file.pdf", "name": "found_file.pdf", "type": "file", "size_kb": 120},
             {"path": f"{path}/found_folder", "name": "found_folder", "type": "directory", "size_kb": 0},
         ]
+
+    def _search_in_files(self, root, keyword, include_exts=None, max_results=20, timeout=10):
+        return {
+            "count": 1,
+            "results": [{
+                "path": f"{root}/mock_target.py",
+                "line_no": 1,
+                "line": f"# 包含关键词 {keyword} 的 mock 行",
+                "match": keyword,
+            }],
+        }
+
+    def _edit_file(self, path, old_text, new_text, occurrence=1):
+        return {
+            "path": path,
+            "replaced": 1,
+            "summary": f"[MOCK] 局部编辑：{old_text[:20]} → {new_text[:20]}",
+        }
 
     # =====================================================
     # Mock 图片

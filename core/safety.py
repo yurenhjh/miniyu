@@ -125,6 +125,9 @@ TOOL_META = {
     "find_old_files": (READ_ONLY, "磁盘整理", "查找长期未修改文件"),
     "find_large_files": (READ_ONLY, "磁盘整理", "查找大文件"),
     "search_files": (READ_ONLY, "磁盘整理", "按名称模式搜索文件"),
+    # 编程开发
+    "search_in_files": (READ_ONLY, "编程开发", "在文件内容中搜索关键词/正则"),
+    "edit_file": (MEDIUM, "编程开发", "局部编辑文本文件（查找并替换）"),
     # 图片处理
     "get_image_metadata": (READ_ONLY, "图片处理", "读取图片元数据/EXIF"),
     "rotate_image": (MEDIUM, "图片处理", "旋转图片并写出结果"),

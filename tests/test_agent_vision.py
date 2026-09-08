@@ -262,23 +262,118 @@ class TestScreenInspect(unittest.TestCase):
 
 
 class TestAgentVisionToolset(unittest.TestCase):
-    """模型可见函数全集 = 57 工具 + 5 白名单技能 + screen_inspect（共 63）"""
+    """模型可见函数全集 = 59 工具 + 5 白名单技能 + screen_inspect + read_image（共 66）"""
 
     def test_agent_toolset_has_screen_inspect(self):
         with tempfile.TemporaryDirectory(prefix="mini_st_") as storage:
             agent = Agent(config=_cfg(storage))
             tools = agent._agent_openai_tools()
             names = [t["function"]["name"] for t in tools]
-            self.assertEqual(len(tools), 63)
+            self.assertEqual(len(tools), 66)
             self.assertIn("screen_inspect", names)
+            self.assertIn("read_image", names)
             self.assertIn("app_send_message", names)
             self.assertIn("read_qq_chat", names)
             self.assertIn("send_email", names)
             self.assertIn("browser_search", names)
             self.assertIn("browser_extract", names)
-            # screen_inspect 不是 SkillLibrary 技能（不改变 57/26 计数）
+            # screen_inspect / read_image 不是 SkillLibrary 技能（不改变 59/26 计数）
             self.assertFalse(agent.api.is_agent_skill("screen_inspect"))
+            self.assertFalse(agent.api.is_agent_skill("read_image"))
             self.assertEqual(len(agent.api.list_skills_openai()), 5)
+
+
+class TestReadImage(unittest.TestCase):
+    """read_image：Agent 自带"读取本地图片文件"能力函数（与 screen_inspect 互补，双通道）"""
+
+    def _agent(self, storage, vision):
+        api = _ShotAPI()
+        agent = Agent(config=_cfg(storage), api=api, llm_client=_VisionBrain(vision))
+        return agent
+
+    def _tmp_png(self):
+        d = tempfile.mkdtemp(prefix="mini_img_")
+        p = os.path.join(d, "1.3.png")
+        with open(p, "wb") as f:
+            f.write(PNG_BYTES)
+        return d, p
+
+    def test_native_vision_returns_image_lane(self):
+        """有视觉主模型：read_image 返回 mode=image + 图片路径（不读进 tool 文本），
+        调用方随后补观测消息，模型下一轮直接看原图"""
+        with tempfile.TemporaryDirectory(prefix="mini_st_") as storage:
+            d, p = self._tmp_png()
+            try:
+                agent = self._agent(storage, vision=True)
+                r = agent._execute_one("read_image", {"path": p, "question": "图里是什么题？"})
+
+                self.assertTrue(r["success"])
+                self.assertEqual(r["mode"], "image")
+                self.assertEqual(r["result"]["image_path"], p)
+                self.assertIn("[read_image]", r["result"]["note"])
+                # 原生视觉：_execute 阶段不把图写进 tool 文本
+                self.assertEqual(len(agent.conversation.messages), 0)
+                agent._attach_inspection_observation(r)
+                self.assertEqual(len(agent.conversation.messages), 1)
+                exp = base64.b64encode(PNG_BYTES).decode("ascii")
+                self.assertEqual(
+                    agent.conversation.messages[0]["content"][1]["image_url"]["url"],
+                    f"data:image/png;base64,{exp}",
+                )
+            finally:
+                import shutil
+                shutil.rmtree(d, ignore_errors=True)
+
+    def test_text_model_uses_vision_bridge(self):
+        """无视觉主模型：走 vision_bridge 转文字描述直接返回"""
+        with tempfile.TemporaryDirectory(prefix="mini_st_") as storage:
+            d, p = self._tmp_png()
+            try:
+                agent = self._agent(storage, vision=False)
+                agent._run_vision_bridge = lambda _p, _q: "这是一道线性代数题：A^2 - 3A - 2E = O，求 (A+E)^-1"
+                r = agent._execute_one("read_image", {"path": p, "question": "图里是什么题？"})
+
+                self.assertTrue(r["success"])
+                self.assertEqual(r["mode"], "text")
+                self.assertIn("线性代数", r["result"]["description"])
+            finally:
+                import shutil
+                shutil.rmtree(d, ignore_errors=True)
+
+    def test_text_model_without_bridge_fails_explicit(self):
+        with tempfile.TemporaryDirectory(prefix="mini_st_") as storage:
+            d, p = self._tmp_png()
+            try:
+                agent = self._agent(storage, vision=False)
+                agent._run_vision_bridge = lambda _p, _q: None
+                r = agent._execute_one("read_image", {"path": p})
+                self.assertFalse(r["success"])
+                self.assertIn("视觉桥", r["error"])
+            finally:
+                import shutil
+                shutil.rmtree(d, ignore_errors=True)
+
+    def test_missing_path_reports_error(self):
+        with tempfile.TemporaryDirectory(prefix="mini_st_") as storage:
+            agent = self._agent(storage, vision=True)
+            r = agent._execute_one("read_image", {})
+            self.assertFalse(r["success"])
+            self.assertIn("path", r["error"])
+
+    def test_nonexistent_file_reports_error(self):
+        with tempfile.TemporaryDirectory(prefix="mini_st_") as storage:
+            agent = self._agent(storage, vision=True)
+            r = agent._execute_one("read_image", {"path": r"D:\no_such_dir\1.3.png"})
+            self.assertFalse(r["success"])
+            self.assertIn("不存在", r["error"])
+
+    def test_schema_requires_path(self):
+        with tempfile.TemporaryDirectory(prefix="mini_st_") as storage:
+            agent = Agent(config=_cfg(storage))
+            schema = next(t for t in agent._agent_openai_tools()
+                          if t["function"]["name"] == "read_image")
+            self.assertEqual(schema["function"]["parameters"]["required"], ["path"])
+            self.assertIn("path", schema["function"]["parameters"]["properties"])
 
 
 class TestProjectVisionBridge(unittest.TestCase):

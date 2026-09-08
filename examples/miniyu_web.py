@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_from_directory
 
 from core.agent import Agent
 from core.agent_config import load_config, set_config_model, set_config_authorization
@@ -222,6 +222,19 @@ HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>miniyu — 桌面 AI 助手</title>
+<!-- KaTeX 公式渲染 + marked Markdown 解析 + DOMPurify 消毒：
+     本地 /vendor/ 优先（随应用一起打包，离线可用），加载失败回退 CDN（jsdelivr → bootcdn）；
+     CDN 全挂时前端优雅回退纯文本 -->
+<link rel="stylesheet" href="/vendor/katex/katex.min.css"
+        onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css'">
+<script src="/vendor/marked.min.js"
+        onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/marked/marked.min.js'"></script>
+<script src="/vendor/purify.min.js"
+        onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/dompurify@3.1.5/dist/purify.min.js'"></script>
+<script src="/vendor/katex/katex.min.js"
+        onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js'"></script>
+<script src="/vendor/katex/auto-render.min.js"
+        onerror="this.onerror=null;this.src='https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js'"></script>
 <style>
 	  :root {
 	    --bg: #1a1a2e;
@@ -234,7 +247,27 @@ HTML = r"""<!DOCTYPE html>
 	    --success: #4ade80;
 	    --warning: #fbbf24;
 	    --danger: #ef4444;
+	    --hover-bg: rgba(255,255,255,0.05);
+	    --system-bg: #2d2d44;
+	    --error-bg: #3b1a1a;
+	    --denied-bg: #2d2d1a;
+	    --code-bg: rgba(255,255,255,0.08);
 	    --sidebar-width: 280px;
+	  }
+	  /* 浅色主题：右上角主题按钮切换，选择记住在 localStorage（miniyu-theme） */
+	  :root[data-theme="light"] {
+	    --bg: #f4f5f9;
+	    --surface: #ffffff;
+	    --card: #e8ecf4;
+	    --accent: #d63a55;
+	    --text: #23272f;
+	    --text-secondary: #6b7280;
+	    --border: #dde2ec;
+	    --hover-bg: rgba(15, 52, 96, 0.07);
+	    --system-bg: #eef0f5;
+	    --error-bg: #fdecec;
+	    --denied-bg: #fdf3e3;
+	    --code-bg: rgba(15, 52, 96, 0.08);
 	  }
 	  * { margin: 0; padding: 0; box-sizing: border-box; }
 	  body {
@@ -295,7 +328,7 @@ HTML = r"""<!DOCTYPE html>
     align-items: stretch;
     gap: 3px;
   }
-  .session-item:hover { background: rgba(255,255,255,0.05); }
+  .session-item:hover { background: var(--hover-bg); }
   .session-item.active {
     background: var(--card);
     border-left: 3px solid var(--accent);
@@ -346,7 +379,7 @@ HTML = r"""<!DOCTYPE html>
     margin-top: 2px;
     transition: background 0.15s;
   }
-  .session-more:hover { background: rgba(255,255,255,0.05); }
+  .session-more:hover { background: var(--hover-bg); }
 	  /* 主区域 */
 	  .main {
 	    flex: 1;
@@ -471,7 +504,7 @@ HTML = r"""<!DOCTYPE html>
 		    align-items: center;
 		    transition: background 0.1s;
 		  }
-		  .model-dropdown-item:hover { background: rgba(255,255,255,0.08); }
+		  .model-dropdown-item:hover { background: var(--hover-bg); }
 		  .model-dropdown-item.active {
 		    background: var(--card);
 		    border-left: 3px solid var(--accent);
@@ -549,7 +582,7 @@ HTML = r"""<!DOCTYPE html>
 	    border-bottom-left-radius: 4px;
 	  }
 	  .message.system {
-	    background: #2d2d44;
+    background: var(--system-bg);
 	    align-self: center;
 	    font-size: 12px;
 	    color: var(--text-secondary);
@@ -558,17 +591,69 @@ HTML = r"""<!DOCTYPE html>
 	    border-radius: 6px;
 	  }
 	  .message.error {
-	    background: #3b1a1a;
+    background: var(--error-bg);
 	    align-self: flex-start;
 	    border-left: 3px solid var(--danger);
 	  }
 	  .message.denied {
-	    background: #2d2d1a;
-	    align-self: center;
-	    font-size: 12px;
-	    color: var(--warning);
-	    border: 1px solid var(--warning);
-	  }
+    background: var(--denied-bg);
+    align-self: center;
+    font-size: 12px;
+    color: var(--warning);
+    border: 1px solid var(--warning);
+  }
+  /* Markdown + KaTeX 渲染内容样式（模型输出先 marked 转 HTML，再渲染 $...$ 公式） */
+  .message p { margin: 0.4em 0; }
+  .message p:first-child { margin-top: 0; }
+  .message p:last-child { margin-bottom: 0; }
+  .message ul, .message ol { padding-left: 1.5em; margin: 0.4em 0; }
+  .message h1, .message h2, .message h3, .message h4 {
+    margin: 0.6em 0 0.3em; line-height: 1.4; font-weight: 600;
+  }
+  .message h1 { font-size: 1.3em; }
+  .message h2 { font-size: 1.2em; }
+  .message h3 { font-size: 1.1em; }
+  .message a { color: var(--accent); text-decoration: underline; }
+  .message blockquote {
+    border-left: 3px solid var(--border);
+    padding-left: 10px;
+    color: var(--text-secondary);
+    margin: 0.4em 0;
+  }
+  .message code {
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    font-family: Consolas, Monaco, 'Courier New', monospace;
+  }
+  .message pre {
+    background: var(--code-bg);
+    padding: 10px 12px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 0.5em 0;
+    white-space: pre;
+  }
+  .message pre code { background: none; padding: 0; }
+  .message table { border-collapse: collapse; margin: 0.5em 0; max-width: 100%; }
+  .message th, .message td { border: 1px solid var(--border); padding: 5px 10px; }
+  .message th { background: var(--hover-bg); }
+  .message img { max-width: 100%; border-radius: 8px; }
+  .message hr { border: none; border-top: 1px solid var(--border); margin: 0.8em 0; }
+  /* 主题切换按钮：与会话数徽章同排，位于其左侧 */
+  .theme-btn {
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 14px;
+    cursor: pointer;
+    line-height: 1.4;
+    transition: all .15s;
+  }
+  .theme-btn:hover { border-color: var(--accent); }
 	  .input-area {
 	    background: var(--surface);
 	    border-top: 1px solid var(--border);
@@ -671,7 +756,7 @@ HTML = r"""<!DOCTYPE html>
                 color: var(--text-secondary);
                 border-radius: 8px;
               }
-              .thinking-header:hover { background: rgba(255,255,255,0.05); }
+              .thinking-header:hover { background: var(--hover-bg); }
               .thinking-label { font-weight: 600; color: var(--accent); }
               .thinking-time { font-size: 12px; opacity: 0.85; }
               .thinking-toggle {
@@ -725,7 +810,7 @@ HTML = r"""<!DOCTYPE html>
 	    color: var(--text-secondary);
 	    margin-top: 4px;
 	    padding: 4px 8px;
-	    background: rgba(255,255,255,0.05);
+	    background: var(--hover-bg);
 	    border-radius: 4px;
 	  }
 	  @media (max-width: 768px) {
@@ -737,6 +822,14 @@ HTML = r"""<!DOCTYPE html>
 	    .header-title { font-size: 16px; }
 	  }
 	</style>
+	<script>
+	  // 首帧前应用已保存的主题（防闪烁）：浅色走 :root[data-theme="light"] 覆盖变量
+	  try {
+	    if (localStorage.getItem('miniyu-theme') === 'light') {
+	      document.documentElement.setAttribute('data-theme', 'light');
+	    }
+	  } catch (e) {}
+	</script>
 	</head>
 	<body>
 	<!-- 侧边栏：会话列表 -->
@@ -752,7 +845,9 @@ HTML = r"""<!DOCTYPE html>
 	<div class="header">
 	  <div class="header-title">miniyu <span>桌面 AI 助手</span></div>
 	  <div class="header-info">
-    <span class="badge" id="session-badge">会话: 0</span>
+	    <button id="theme-btn" class="theme-btn" onclick="toggleTheme()"
+	            title="切换深浅主题（选择会记住，下次打开保持）">☀️</button>
+	    <span class="badge" id="session-badge">会话: 0</span>
 	    <span class="badge" id="provider-badge">离线模式</span>
 	    <button id="websearch-toggle" class="websearch-toggle" onclick="toggleWebSearch()"
 	            title="联网搜索总开关（DeepSeek 式）：开=百炼端点自动服务端搜索/其他端点保留本地搜索工具；关=完全离线，不注入、不显示本地搜索工具。即时生效，不写入配置文件">🌐 联网: 开</button>
@@ -798,15 +893,82 @@ HTML = r"""<!DOCTYPE html>
 	</div>
 	<script>
 	let currentTaskId = null;
-	let polling = false;
-	let eventSource = null;
-	let sseActive = false;
-	let render = null;
-	
-	function addMessage(text, role, toolInfo) {
-	  const div = document.createElement('div');
-	  div.className = 'message ' + role;
-	  div.textContent = text;
+let polling = false;
+let eventSource = null;
+let sseActive = false;
+let render = null;
+
+// ===== Markdown + LaTeX 渲染 =====
+// 模型输出的是「Markdown + $...$ LaTeX」混合文本（如 $A^2 - 3A - 2E = O$）。
+// 正确流程（行业标准，Open WebUI / Lobe-Chat 同款）：
+//   1) 先把 $...$ / $$...$$ LaTeX 片段提取成私有区占位符（marked 会吞反斜杠，如 \frac → frac，
+//      必须先保护，否则公式被破坏）；
+//   2) marked 把 Markdown 转 HTML → 还原占位符；
+//   3) DOMPurify 消毒（防注入）→ 写入 DOM；
+//   4) renderMathInElement 把 $...$ 渲染成可视公式。
+// CDN/本地库加载失败（离线/被墙）时优雅回退为纯文本，绝不崩页面、绝不把 $ 原样丢弃。
+function renderContent(el, text) {
+  if (typeof marked === 'undefined') {
+    el.textContent = text || '';
+    return;
+  }
+  try {
+    var saved = [];
+    // 提取 LaTeX（先 $$...$$ 后 $...$），用私有区字符做占位符，marked 不会碰它们
+    var protectedText = String(text || '').replace(/\$\$[\s\S]+?\$\$|\$[^$\n]+?\$/g, function (m) {
+      saved.push(m);
+      return '\uE000M' + (saved.length - 1) + '\uE001';
+    });
+    var html = marked.parse(protectedText, { breaks: true, gfm: true });
+    html = html.replace(/\uE000M(\d+)\uE001/g, function (_, i) {
+      return saved[Number(i)];
+    });
+    if (typeof DOMPurify !== 'undefined') {
+      html = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+    }
+    el.innerHTML = html;
+    if (typeof renderMathInElement === 'function') {
+      renderMathInElement(el, {
+        delimiters: [
+          { left: '$$', right: '$$', display: true },
+          { left: '$', right: '$', display: false },
+          { left: '\\(', right: '\\)', display: false },
+          { left: '\\[', right: '\\]', display: true }
+        ],
+        throwOnError: false
+      });
+    }
+  } catch (e) {
+    el.textContent = text || '';
+  }
+}
+
+// ===== 主题切换（深浅色，localStorage 记忆） =====
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  var btn = document.getElementById('theme-btn');
+  if (btn) btn.textContent = (t === 'light') ? '🌙' : '☀️';
+}
+function toggleTheme() {
+  var cur = 'dark';
+  try { cur = localStorage.getItem('miniyu-theme') || 'dark'; } catch (e) {}
+  var next = (cur === 'dark') ? 'light' : 'dark';
+  try { localStorage.setItem('miniyu-theme', next); } catch (e) {}
+  applyTheme(next);
+}
+// 页面加载完成后再同步按钮图标（主题本身已在 <head> 首帧前应用，防闪烁）
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', function () {
+    try { applyTheme(localStorage.getItem('miniyu-theme') || 'dark'); } catch (e) { applyTheme('dark'); }
+  });
+} else {
+  try { applyTheme(localStorage.getItem('miniyu-theme') || 'dark'); } catch (e) { applyTheme('dark'); }
+}
+
+function addMessage(text, role, toolInfo) {
+  const div = document.createElement('div');
+  div.className = 'message ' + role;
+  renderContent(div, text);
 	  if (toolInfo) {
 	    const info = document.createElement('div');
 	    info.className = 'tool-info';
@@ -1215,7 +1377,7 @@ function settleTask(status, result) {
   currentTaskId = null;
   completeThinking();
   if (render && render.answerEl) {
-    if (result) render.answerEl.textContent = result;  // 以最终全文校准，防流中断截断
+    if (result) renderContent(render.answerEl, result);  // 以最终全文校准（含 Markdown/公式渲染），防流中断截断
   } else {
     const role = status === 'error' ? 'error'
       : (result && result.indexOf('已取消') !== -1 ? 'denied' : 'bot');
@@ -1679,6 +1841,13 @@ def add_cors_headers(response):
 @app.route("/", methods=["GET", "OPTIONS"])
 def index():
     return HTML
+
+
+@app.route("/vendor/<path:filename>", methods=["GET"])
+def vendor(filename):
+    """本地托管第三方前端库（KaTeX/marked/DOMPurify）——不依赖外网 CDN，离线可用"""
+    root = Path(__file__).resolve().parent / "static" / "vendor"
+    return send_from_directory(str(root), filename)
 
 
 @app.route("/status", methods=["GET"])

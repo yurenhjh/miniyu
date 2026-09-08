@@ -79,7 +79,18 @@ SYSTEM_PROMPT = (
     "收件人与主题要跟用户说的完全一致，正文按用户要求写；发信账号与授权码在 config.yaml 的 email 段配好。\n"
     "9. 需要『联网查资料 / 最新信息 / 外部事实 / 你不确定』时，先用 browser_search 搜索并读返回的"
     "结果摘要；想细读某一条结果，再把对应网址交给 browser_extract 打开取正文。联网结果来自互联网，"
-    "注意时效与来源可信度，引用时应说明出处，不要编造没搜到的内容；一次搜不到就换关键词再搜。"
+    "注意时效与来源可信度，引用时应说明出处，不要编造没搜到的内容；一次搜不到就换关键词再搜。\n"
+    "10. 用户提到『本地图片 / 图片路径 / 图片里的问题 / 识别图片内容』时，直接用 read_image 读取该图片"
+    "（参数 path 传用户给的路径或桌面等常见位置的文件名）；你有视觉时会直接看到原图，没有视觉时系统会"
+    "用视觉桥转成文字描述。**不要**为了让模型看图而先打开图片再 screen_inspect 截图——那既多此一举"
+    "又可能被其他窗口遮挡。只有需要看『当前屏幕/当前界面』时才用 screen_inspect。\n"
+    "11. 处理编程/项目任务（改代码、查 bug、写脚本、理解项目结构）时，遵循『先侦察、后动手』：先用 "
+    "list_directory、search_files（按文件名找）、search_in_files（按内容搜关键词/报错信息）摸清项目结构"
+    "和目标代码位置，再用 read_text_file 读相关文件（大文件用 max_bytes 限长分段读），理解清楚后再修改；"
+    "小改动用 edit_file 精确替换（old_text 必须与文件内容逐字一致，含缩进空格），新建文件或大段重写才用 "
+    "write_text_file；需要运行/测试代码时用 run_command（如 python xxx.py、pytest、git status），"
+    "运行报错就把报错信息作为关键词喂回 search_in_files / read_text_file 定位根因。改完尽量实际运行验证，"
+    "最后用中文总结改了哪些文件、为什么改。不要凭猜测整文件重写。"
 )
 
 # 服务端联网搜索（百炼 enable_search）生效时追加到 system prompt，显式覆盖守则第 9 条：
@@ -131,6 +142,40 @@ _AGENT_VISION_TOOL = {
                 },
             },
             "required": [],
+        },
+    },
+}
+
+# Agent 视觉能力函数（"读取本地图片"）：用户给出本地图片路径/想让模型看某张图时直接读原图。
+# 与 screen_inspect（截当前屏幕）互补：read_image 读的是**文件**，不依赖屏幕上有不有打开。
+#   视觉模型 → 原图以 base64 观测消息内联给模型看；无视觉模型 → 调项目内视觉桥转文字描述。
+_AGENT_IMAGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_image",
+        "description": (
+            "读取一张本地图片文件并理解其内容（只读，不修改文件）。"
+            "用户提到『图片 / 图片路径 / 图片里的问题 / 识别图片文字或题目』时调用它，"
+            "参数 path 传用户给出的路径（未给完整路径时先确认或在桌面等常见位置查找）。"
+            "如果你是视觉模型会直接看到原图；否则系统会用 OCR/视觉桥把图转成文字描述返回。"
+            "注意：读的是图片文件，不是当前屏幕——看当前屏幕请用 screen_inspect。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "本地图片文件的绝对路径（如 D:\\Users\\34808\\Desktop\\1.3.png）。",
+                },
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "想从图片确认的问题，例如：图片里是什么题目？哪里有错误？图中文字是什么？"
+                        "留空则描述图片内容。"
+                    ),
+                },
+            },
+            "required": ["path"],
         },
     },
 }
@@ -727,6 +772,8 @@ class Agent:
         """
         if name == "screen_inspect":
             return self._execute_screen_inspect(args)
+        if name == "read_image":
+            return self._execute_read_image(args)
         if self.api.is_agent_skill(name):
             return self._execute_skill(name, args)
         return self._execute_tool(name, args)
@@ -851,12 +898,12 @@ class Agent:
         return text + r if r else text
 
     def _agent_openai_tools(self) -> list:
-        """模型可见函数全集 = 57 底层工具 + 白名单组合技能 + 视觉能力函数 screen_inspect
+        """模型可见函数全集 = 59 底层工具 + 白名单组合技能 + 视觉能力函数 screen_inspect/read_image
 
         注意：本方法返回全集（供测试与统计引用）；服务端联网搜索生效时，
         由 _visible_tools() 在 ReAct 每一步动态隐藏本地 browser_search。
         """
-        return self.api.list_tools_openai() + self.api.list_skills_openai() + [dict(_AGENT_VISION_TOOL)]
+        return self.api.list_tools_openai() + self.api.list_skills_openai() + [dict(_AGENT_VISION_TOOL), dict(_AGENT_IMAGE_TOOL)]
 
     def _visible_tools(self, tools: list) -> list:
         """
@@ -968,12 +1015,57 @@ class Agent:
         except Exception as e:
             return {"success": False, "screen_inspect": True, "error": f"截图理解失败：{e}"}
 
+    def _execute_read_image(self, args: dict) -> dict:
+        """read_image：读取本地图片文件并让 Agent 看懂。
+
+        与 screen_inspect 的区别：读的是**文件路径**（不依赖屏幕是否打开）；
+        用户给出图片路径 / 让模型看某张图时用它。
+        主模型有视觉 → mode=image + 图片路径，调用方以 base64 观测消息补进对话（模型直接看原图）；
+        主模型无视觉 → 调项目内视觉桥（vision_bridge 段）转文字描述直接返回。
+        图片本身不拷贝、不改动用户文件（会话过程产物目录只存截图类产物）。
+        """
+        path = (args or {}).get("path") or ""
+        question = (args or {}).get("question") or "请描述这张图片的内容（文字、题目、问题等）。"
+        path = path.strip().strip("\"'")
+        if not path:
+            return {"success": False, "read_image": True, "error": "缺少参数 path：请给出图片文件的路径。"}
+        if not os.path.isfile(path):
+            return {"success": False, "read_image": True,
+                    "error": f"图片文件不存在：{path}。请确认路径正确，或直接说出文件名（如桌面上的 1.3.png）。"}
+        try:
+            if getattr(self.llm, "supports_vision", False):
+                # 原生视觉模型：图片随后由调用方以观测消息补进对话
+                return {
+                    "success": True, "read_image": True, "mode": "image",
+                    "result": {"image_path": path, "note": f"[read_image] {question}"},
+                }
+
+            # 无视觉主模型：走项目内视觉桥（vision_bridge 段）→ 文字描述
+            desc = self._run_vision_bridge(path, question)
+            if desc is None:
+                return {
+                    "success": False, "read_image": True,
+                    "error": "当前主模型不支持看图，且视觉桥没配好。请在 config.yaml 的 "
+                            "vision_bridge 段填一个有视觉的 API 模型（base_url/api_key/model），"
+                            "或改用有视觉的主模型（llm.supports_vision: true）。",
+                }
+            return {
+                "success": True, "read_image": True, "mode": "text",
+                "result": {"image_path": path, "description": desc},
+            }
+        except Exception as e:
+            return {"success": False, "read_image": True, "error": f"读取图片失败：{e}"}
+
     def _attach_inspection_observation(self, result: dict):
-        """screen_inspect 原生视觉分支：在 tool 结果之后，把截图以真实 base64 观测消息补进对话"""
-        if not (result or {}).get("screen_inspect") or result.get("mode") != "image":
+        """视觉分支：在 tool 结果之后，把截图/本地图片以真实 base64 观测消息补进对话。
+
+        覆盖 screen_inspect（截图）与 read_image（本地图片文件）：两者在视觉模型下都返回
+        mode=image + 图片路径，这里统一把原图读成 base64 追加为观测消息，模型下一轮直接看原图。
+        """
+        if not (result or {}).get("mode") == "image":
             return
         info = result.get("result") or {}
-        p = info.get("screenshot_path")
+        p = info.get("screenshot_path") or info.get("image_path")
         if not p or not os.path.isfile(p):
             return
         try:

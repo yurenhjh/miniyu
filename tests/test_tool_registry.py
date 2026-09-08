@@ -46,7 +46,7 @@ class TestToolRegistry(unittest.TestCase):
         self.assertIn("browser_launch", tools)
         self.assertIn("browser_snapshot", tools)
         self.assertIn("click_at", tools)
-        self.assertEqual(len(tools), 57)
+        self.assertEqual(len(tools), 59)
 
     def test_unregister_tool(self):
         """测试注销工具"""
@@ -935,6 +935,136 @@ class TestNewTools(unittest.TestCase):
         """read_text_file 超过 max_bytes 应报错"""
         result = self._call("read_text_file", path=self.f1, max_bytes=5)
         self.assertFalse(result["success"])
+
+
+class TestProgrammingTools(unittest.TestCase):
+    """search_in_files（内容搜索）+ edit_file（局部编辑）：编程项目辅助工具"""
+
+    def setUp(self):
+        self.registry = ToolRegistry()
+        self.root = tempfile.mkdtemp(prefix="mini_prog_")
+        os.makedirs(os.path.join(self.root, "pkg"))
+        # 模拟一个小项目
+        self.main_py = os.path.join(self.root, "main.py")
+        self.util_py = os.path.join(self.root, "pkg", "util.py")
+        self.ignore_dir = os.path.join(self.root, "node_modules")
+        os.makedirs(self.ignore_dir, exist_ok=True)
+        with open(self.main_py, "w", encoding="utf-8") as f:
+            f.write("import util\n\n"
+                    "def add(a, b):\n"
+                    "    return a + b\n\n"
+                    "print(add(1, 2))  # TODO: 换成真实计算\n")
+        with open(self.util_py, "w", encoding="utf-8") as f:
+            f.write("def helper():\n"
+                    "    return 'helper'\n")
+        with open(os.path.join(self.ignore_dir, "dep.js"), "w", encoding="utf-8") as f:
+            f.write("// TODO: 依赖文件（应被跳过）\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _call(self, name, **kw):
+        return self.registry.call(name, kw)
+
+    # ---- search_in_files ----
+
+    def test_search_in_files_finds_keyword(self):
+        """内容搜索能跨文件命中并带行号与原文"""
+        r = self._call("search_in_files", root=self.root, keyword="def ")
+        self.assertTrue(r["success"])
+        body = r["result"]
+        self.assertEqual(body["count"], 2)  # main.py 的 add + util.py 的 helper
+        paths = {m["path"] for m in body["results"]}
+        self.assertIn(os.path.join(self.root, "main.py"), paths)
+        self.assertIn(self.util_py, paths)
+
+    def test_search_in_files_skips_unrelated_dirs(self):
+        """node_modules 等无关目录默认被跳过"""
+        r = self._call("search_in_files", root=self.root, keyword="TODO")
+        self.assertTrue(r["success"])
+        for m in r["result"]["results"]:
+            self.assertNotIn("node_modules", m["path"])
+        self.assertGreaterEqual(r["result"]["count"], 1)  # main.py 里的 TODO 仍命中
+
+    def test_search_in_files_ext_filter(self):
+        """include_exts 限定扩展名"""
+        r = self._call("search_in_files", root=self.root, keyword="def helper",
+                       include_exts=[".py"])
+        self.assertTrue(r["success"])
+        self.assertEqual(r["result"]["count"], 1)
+        self.assertTrue(r["result"]["results"][0]["path"].endswith("util.py"))
+
+    def test_search_in_files_requires_keyword(self):
+        """空关键词报错"""
+        r = self._call("search_in_files", root=self.root, keyword="")
+        self.assertFalse(r["success"])
+
+    def test_search_in_files_missing_root(self):
+        """目录不存在报错"""
+        r = self._call("search_in_files", root="Z:/no/such/dir", keyword="x")
+        self.assertFalse(r["success"])
+
+    # ---- edit_file ----
+
+    def test_edit_file_first_occurrence(self):
+        """默认替换第一处，返回编辑摘要"""
+        r = self._call("edit_file", path=self.main_py,
+                       old_text="    return a + b", new_text="    return a + b + 1")
+        self.assertTrue(r["success"])
+        body = r["result"]
+        self.assertEqual(body["replaced"], 1)
+        with open(self.main_py, "r", encoding="utf-8") as f:
+            self.assertIn("return a + b + 1", f.read())
+        self.assertIn("第 4 行", body["summary"])
+
+    def test_edit_file_occurrence_all(self):
+        """occurrence='all' 替换全部匹配"""
+        p = os.path.join(self.root, "multi.txt")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("x=1\ny=2\nx=3\n")
+        r = self._call("edit_file", path=p, old_text="x=", new_text="v=",
+                       occurrence="all")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["result"]["replaced"], 2)
+        with open(p, "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "v=1\ny=2\nv=3\n")
+
+    def test_edit_file_occurrence_too_large(self):
+        """occurrence 超出匹配次数报错"""
+        r = self._call("edit_file", path=self.main_py,
+                       old_text="print(add(1, 2))", new_text="x", occurrence=2)
+        self.assertFalse(r["success"])
+
+    def test_edit_file_not_found(self):
+        """old_text 不逐字匹配时报错并提示核对原文"""
+        r = self._call("edit_file", path=self.main_py,
+                       old_text="return a+b", new_text="x")  # 少了个空格
+        self.assertFalse(r["success"])
+        self.assertIn("未找到", r["error"])
+
+    def test_edit_file_delete_via_empty_new_text(self):
+        """new_text 传空串表示删除该段"""
+        r = self._call("edit_file", path=self.main_py,
+                       old_text="# TODO: 换成真实计算", new_text="")
+        self.assertTrue(r["success"])
+        with open(self.main_py, "r", encoding="utf-8") as f:
+            self.assertNotIn("TODO", f.read())
+
+    def test_edit_file_gbk_file_keeps_encoding(self):
+        """GBK 编码文件编辑后仍为 GBK（中文 Windows 常见）"""
+        p = os.path.join(self.root, "gbk.txt")
+        with open(p, "w", encoding="gbk") as f:
+            f.write("你好\n世界\n")
+        r = self._call("edit_file", path=p, old_text="世界", new_text="地球")
+        self.assertTrue(r["success"])
+        with open(p, "r", encoding="gbk") as f:
+            self.assertEqual(f.read(), "你好\n地球\n")
+
+    def test_edit_file_missing_file(self):
+        """文件不存在报错"""
+        r = self._call("edit_file", path=os.path.join(self.root, "nope.py"),
+                       old_text="a", new_text="b")
+        self.assertFalse(r["success"])
 
 
 if __name__ == "__main__":

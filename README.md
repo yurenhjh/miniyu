@@ -1,6 +1,6 @@
 # Group4 - miniyu 桌面 AI 助手（Tool Registry + OS Skills + Agent 编排层）
 
-## 完整桌面 AI 助手（LLM 驱动，function-calling 调用 57 个系统工具 + 26 个技能）
+## 完整桌面 AI 助手（LLM 驱动，function-calling 调用 59 个系统工具 + 26 个技能）
 
 ---
 
@@ -51,7 +51,7 @@ python examples/agent_cli.py
 
 # 2. 项目简介
 
-本项目为课程设计 **第4组：miniyu 桌面 AI 助手**（LLM 驱动，function-calling 调用 57 个系统工具 + 26 个技能），底层以"工具注册 + OS Skills（Tool Registry + OS Skills）"作为统一系统能力接口。
+本项目为课程设计 **第4组：miniyu 桌面 AI 助手**（LLM 驱动，function-calling 调用 59 个系统工具 + 26 个技能），底层以"工具注册 + OS Skills（Tool Registry + OS Skills）"作为统一系统能力接口。
 
 本模块负责为 Agentic OS 提供统一的系统能力接口，包括：
 
@@ -141,7 +141,7 @@ Skill（高级任务能力）
 - 不依赖真实文件系统
 - 支持跨组并行开发
 - 保证接口稳定一致
-- 覆盖全部57个工具和24个技能
+- 覆盖全部59个工具和24个技能
 
 ## 3.5 工具描述 Schema（ToolSpec）
 
@@ -207,7 +207,7 @@ miniyu 是第4组独立实现的 AI 桌面助手，通过 LLM 驱动的 Agent �
 | 界面 | 文件 | 说明 |
 |------|------|------|
 | **终端界面（CLI）** | `examples/agent_cli.py` | 零依赖，任何机器都能跑，miniyu 品牌提示符 |
-| **Web 桌面客户端** | `examples/miniyu_web.py` | Flask + 深色主题，高危操作弹模态框确认；顶栏可切换授权档位（基础 / 高级 / 全自动）；**可搜索模型下拉框**：在线模型点选即热切换（先实测连通），本地 Ollama 模型点选即切离线模式 |
+| **Web 桌面客户端** | `examples/miniyu_web.py` | Flask + 深/浅双主题（顶栏 ☀️/🌙 一键切换、localStorage 记忆），高危操作弹模态框确认；顶栏可切换授权档位（基础 / 高级 / 全自动）；**可搜索模型下拉框**：在线模型点选即热切换（先实测连通），本地 Ollama 模型点选即切离线模式；**KaTeX 数学公式渲染**（`$...$`/`$$...$$` → 正常排版，KaTeX/marked/DOMPurify 本地打包离线可用） |
 
 ### 架构
 
@@ -223,7 +223,7 @@ miniyu 是第4组独立实现的 AI 桌面助手，通过 LLM 驱动的 Agent �
     │   └── FailoverClient（自动降级：主 API → 本地 Ollama → 确定性脑；
     │       支持运行时热切换模型 + force_local 手动本地模式）
     ↓
- OSServiceAPI（57 个工具 + 26 个技能）
+ OSServiceAPI（59 个工具 + 26 个技能）
     ↓
  实际执行
 ```
@@ -291,7 +291,7 @@ group4_tools_os_skills/
 │
 ├── core/                          # 核心模块
 │   ├── __init__.py
-│   ├── tool_registry.py           # 工具注册表（正式版，57 工具，含 click_at + 系统管理）
+│   ├── tool_registry.py           # 工具注册表（正式版，59 工具，含 click_at + 系统管理 + 编程辅助）
 	│   ├── tool_schema.py           # 工具描述 Schema（ToolSpec，多格式转换）
 	│   ├── skill_library.py           # OS Skills 技能库（26 技能，含 app_*/browser_*/QQ读 read_qq_chat/邮件 send_email）
 	│   ├── app_controller.py          # 应用操作控制器（Windows/Linux；click_at / read_clipboard / get_window_rect）
@@ -308,10 +308,10 @@ group4_tools_os_skills/
 │
 ├── mock/                          # Mock模块（跨组联调用）
 │   ├── __init__.py                # Mock统一入口 + MockOSServiceAPI
-│   ├── mock_tools.py              # Mock版工具注册表（57个工具）
+│   ├── mock_tools.py              # Mock版工具注册表（59个工具）
 │   └── mock_skills.py             # Mock版技能库（26个技能）
 │
-├── tests/                         # 单元测试（共 494 个，全部通过）
+├── tests/                         # 单元测试（共 512 个，全部通过）
 │   ├── __init__.py
 │   ├── test_tool_registry.py      # ToolRegistry测试（92个：全部工具+新工具+异常+别名+错误码）
 │   ├── test_skills.py             # SkillLibrary测试（43个：基础+扩展+搜索+Agent）
@@ -357,7 +357,9 @@ group4_tools_os_skills/
 │       ├── 0006-search-modes.md         # 搜索精确/模糊匹配增强记录
 │       ├── 0007-path-naming-unification.md # 命名归位与隐藏别名决策
 │       ├── 0008-app-send-message-click-probe.md # app_send_message 改点击+探针路线
-│       └── 0009-agent-screen-inspect-artifacts.md # Agent截图理解+过程产物生命周期
+│       ├── 0009-agent-screen-inspect-artifacts.md # Agent截图理解+过程产物生命周期
+│       ├── 0010-read-image-local.md   # 本地图片直读 read_image（视觉双通道扩展）
+│       └── 0011-programming-project-tools.md # 编程项目辅助：search_in_files + edit_file
 │
 ├── CONTEXT.md                     # 术语表（文件/目录/路径命名约定）
 	├── config.yaml                   # miniyu 配置文件（用户可直接编辑，不改代码）
@@ -373,7 +375,7 @@ group4_tools_os_skills/
 
 ---
 
-# 5. 已实现工具列表（共57个）
+# 5. 已实现工具列表（共59个）
 
 | 工具名称 | 功能 | 类别 |
 |----------|------|------|
@@ -406,6 +408,8 @@ group4_tools_os_skills/
 | find_old_files | 查找长期未修改文件 | 磁盘整理 |
 | find_large_files | 查找目录下的大文件（按大小降序，min_size_mb/limit 可调） | 磁盘整理 |
 | search_files | 按文件名模式搜索（glob 风格，如 *.pdf / 关键词） | 磁盘整理 |
+| search_in_files | 在文件内容中搜索关键词/正则（带行号与原文） | 编程开发 |
+| edit_file | 局部编辑文本文件（查找原文片段精确替换，不整文件重写） | 编程开发 |
 | get_image_metadata | 获取图片宽高/格式/色彩/EXIF | 图片处理（需Pillow） |
 | rotate_image | 旋转图片 | 图片处理（需Pillow） |
 | current_directory | 获取当前路径 | 系统工具 |
@@ -837,6 +841,7 @@ python -m pytest tests/test_agent_read_web.py -v
 - **2026-09-07 联网搜索总开关（DeepSeek 式：一个开关管所有联网能力）**：实测模型会自己判断要不要搜（知识题不触发、时效题才搜），但 enable_search 开着时**每次请求注入约 3K token 固定搜索指令**（知识题 prompt_tokens 24→3088）且按次计费 → 做成用户可控总开关。配置重构：删除 `llm.bailian_tools` 段、新增**顶层 `web_search.enabled`**（默认 true）三态语义——开+百炼=服务端搜索注入 + browser_search 隐藏；开+其他=本地搜索工具全可见模型自决；关=完全离线、不注入、本地搜索工具全隐藏。Agent 层 `_visible_tools()` 三分支裁剪 + `set_web_search_enabled()` 运行时切换；Web 顶栏「🌐 联网: 开/关」按钮 + `/toggle-web-search`。新增 3 例扩到 19 例，**462 全绿**；端到端真机（e2e_web_search_switch.py）：开 62/63 → 关 61/63 → 切回开还原；关态问天气模型如实答"离线模式无法获取实时数据"、未调隐藏工具、未编造
 - **2026-09-07 本地模型纯对话模式（tool_free）+ Web SSE 流式 + DeepSeek 式思考展示**：实测本地 7B 纯 CPU 写 800 token 要 132s、带 63 工具 schema 光 prompt eval 就 33~150s → 用户决策本地模型只做聊天不接工具。`tool_free` 静默忽略 tools（本地端点 localhost 自动 true，config fallback 段显式标注）；Agent 轻量对话分支 `_chat_mode()`（自述离线限制、建议切在线模型办工具类任务）；`chat_stream` 捕获 `reasoning_content`/`reasoning` 思考通道。Web 改 **SSE 事件队列**：`/chat` 立即返 task_id → 后台 `run_stream` 逐 chunk 入队 → `/task/<id>/events` 推送（reasoning/token/tool_call/confirm/done/error + 15s 心跳 + confirm 应答，done/error 自动清理）；前端思考实时滚动 + 计时、完成折叠"已深度思考（用时 Xs）"、正文逐字渐进。新增 `tests/test_tool_free_sse.py` 21 例，**483 全绿**；端到端真机（e2e_local_chat_stream.py 14/14）：force_local 切本地写故事首 token 9~20s（原 33~150s）、思考 1400+ 字 + 正文正常；场景 B 主 API 挂掉自动降级 degraded 本地回复；场景 C Web SSE 434 事件按序到达、任务无泄漏
 - **2026-09-07 本地模型乱码修复（UTF-8 增量解码）+「停止生成」打断（DeepSeek 式）**：问题一＝三个本地模型回复全变 `æ°è½æº` 乱码——根因（实测）Ollama 流式响应头不带 charset，requests `iter_content(decode_unicode=True)` 按 ISO-8859-1 误解码 UTF-8 中文（**不是模型乱码，是 Python 客户端解码层出错**）→ `chat_stream` 改按字节读流 + `codecs.getincrementaldecoder("utf-8")` 增量解码（天然容忍多字节跨网络块）；问题二＝本地小模型死循环/超长输出无法打断 → 三层：`run_stream(stop_check=...)` 回调（轮次/流式 chunk 间隙检查，保留已流出文本 + stop chunk 收尾）＋ Web `/task/<id>/stop` 端点（幂等）＋ 前端红色「⏹ 停止」按钮。新增 `tests/test_stream_stop_encoding.py` 11 例，**494 全绿**；端到端真机（e2e_stop_encoding_live.py）：1.5B/4B/7B 三模型中文全正常、打断终态 <0.5s、保留部分文本
+- **2026-09-08 四连发：本地图片直读 + 编程项目辅助 + KaTeX 公式渲染 + 深浅主题**：① **read_image 直接读本地图片**（给路径即分析，不必先打开屏幕靠截屏）——主模型有原生视觉（`llm.supports_vision: true`）直接看图，无视觉自动走 `core/vision_bridge` 转文字描述，文件缺失/两源都没配好时明确报错不瞎编；模型可见函数集 = **59 工具 + 5 白名单技能 + screen_inspect/read_image 视觉双通道（共 66）**；② **编程项目工作流**：新增 `search_in_files`（按内容搜关键词/正则、带行号原文）+ `edit_file`（原文片段精确替换，不整文件重写），SYSTEM_PROMPT 新守则第 11 条「先侦察、后动手」（list_directory→search_files→search_in_files→read_text_file→edit_file/write_text_file→run_command 实跑验证），小改不整重写、报错喂回搜索定位根因；③ **Web 前端 KaTeX 公式渲染**：`$...$`/`$$...$$` → 正常数学排版（先保护 LaTeX 片段防 marked 吞反斜杠 → marked 转 HTML → DOMPurify 消毒 → renderMathInElement），KaTeX/marked/DOMPurify **本地打包** `examples/static/vendor/`（离线可用，CDN 兜底回退）；④ **顶栏主题按钮**（会话数徽章左侧 ☀️/🌙）：深/浅色 CSS 变量切换 + localStorage 记忆 + 首帧防闪烁。全量 **512 全绿**；内嵌浏览器实测：主题切换持久化、行内+块级公式渲染（katex-display）、Markdown 加粗/代码正常、vendor 本地加载零 404
 
 ## 第4周计划
 - 工具签名验证（可选）
