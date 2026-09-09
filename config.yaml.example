@@ -99,6 +99,13 @@ agent:
   authorization: base
   history_window: 20
   enable_planning: false
+  # 第5组系统协调层（审计 + RAG 执行轨迹）：
+  #   每次对话结束记一条审计日志，并把"用户输入→动作→结果"存入 RAG 知识库
+  #   （轻量向量检索，供 Agent 参考历史做法）。audit_path 留空=仅内存不落盘。
+  coordinator:
+    enabled: true
+    audit_path: ""          # 如 "audit.jsonl"（留空不落盘，只在内存）
+    rag_max_docs: 500       # 知识库保留轨迹上限
 
 memory:
   storage_dir: "conversations"

@@ -322,6 +322,36 @@ class Agent:
         # 人类中断回调（对标 LangGraph 的 human-in-the-loop）
         self.interrupt_handler = None  # set_interrupt_handler(handler)
 
+        # 第5组系统协调层（审计 + RAG 执行轨迹）：
+        #   enable_coordinator=False 时保持旧行为（无审计/RAG），默认开启。
+        #   每次 run/run_stream 结束时记一条审计，并把"用户输入→动作→结果"存入
+        #   RAG 知识库（轻量向量检索，供 Agent 参考历史做法，对标第5组职责）。
+        coord_cfg = agent_cfg.get("coordinator", {})
+        if coord_cfg.get("enabled", True):
+            from core.coordinator import SystemCoordinator, AuditLog, RAGKnowledgeBase
+            self.coordinator = SystemCoordinator(
+                audit=AuditLog(path=coord_cfg.get("audit_path")),
+                rag=RAGKnowledgeBase(max_docs=int(coord_cfg.get("rag_max_docs", 500))),
+            )
+        else:
+            self.coordinator = None
+
+    # 供 run/run_stream 结束时统一记录审计 + RAG 轨迹
+    def _record_coordinator_trace(self, user_input: str, actions: list, result: str,
+                                  ok: bool = True) -> None:
+        if self.coordinator is None:
+            return
+        self.coordinator.audit.log(
+            "agent_turn",
+            {"input": self.coordinator.sandbox.privacy_protect(user_input),
+             "ok": ok, "result": str(result)[:200]},
+        )
+        self.coordinator.rag.add_trace(
+            input_text=user_input,
+            actions=actions or [],
+            result=str(result)[:500],
+        )
+
     # ============================================================
     # 兼容属性：self.conversation → 当前会话
     # ============================================================
@@ -460,12 +490,14 @@ class Agent:
             return "请输入指令。"
 
         self._turn_artifacts = []
+        self._turn_tool_calls: list[dict] = []
         self.conversation.add_user(user_input)
 
         # 用户说"清理截图/清理产物"等 → 直接清当前会话过程产物，不经过 LLM
         clean_msg = self._try_cleanup_command(user_input)
         if clean_msg is not None:
             self.sessions.save()
+            self._record_coordinator_trace(user_input, self._turn_tool_calls, clean_msg)
             return clean_msg
 
         # 规划层：分解复杂任务为子步骤（对标 AutoGPT）；
@@ -521,10 +553,16 @@ class Agent:
 
                     # 执行工具（含安全确认）
                     result = self._execute_one(name, args)
+                    self._turn_tool_calls.append({
+                        "tool": name, "args": args,
+                        "ok": bool(result.get("success")),
+                    })
 
                     # 用户拒绝高危操作 → 直接返回
                     if not result.get("success") and "拒绝" in result.get("error", ""):
-                        return self._with_reminder(f"操作已取消：{result['error']}")
+                        msg = self._with_reminder(f"操作已取消：{result['error']}")
+                        self._record_coordinator_trace(user_input, self._turn_tool_calls, msg)
+                        return msg
 
                     self.conversation.add_tool_result(
                         tool_call_id=call_id,
@@ -551,6 +589,7 @@ class Agent:
                 if isinstance(self.llm, DeterministicBrain):
                     summary = self._format_deterministic_result(response.tool_calls, result)
                     self.sessions.save()
+                    self._record_coordinator_trace(user_input, self._turn_tool_calls, summary)
                     return self._with_reminder(summary)
 
             elif response.text:
@@ -558,16 +597,20 @@ class Agent:
                 self.conversation.add_assistant(content=response.text)
                 self._compress_memory()  # 压缩记忆（对标 AutoGPT）
                 self.sessions.save()
+                self._record_coordinator_trace(user_input, self._turn_tool_calls, response.text)
                 return self._with_reminder(response.text)
 
             else:
-                return "Agent 无法理解 LLM 的响应，请重试。"
+                msg = "Agent 无法理解 LLM 的响应，请重试。"
+                self._record_coordinator_trace(user_input, self._turn_tool_calls, msg, ok=False)
+                return msg
 
         # 超出最大步数
         summary = f"任务未能在 {self.max_steps} 步内完成，已自动终止。"
         self.conversation.add_assistant(content=summary)
         self._compress_memory()
         self.sessions.save()
+        self._record_coordinator_trace(user_input, self._turn_tool_calls, summary, ok=False)
         return self._with_reminder(summary)
 
     # ============================================================
@@ -603,6 +646,7 @@ class Agent:
             return
 
         self._turn_artifacts = []
+        self._turn_tool_calls: list[dict] = []
         self.conversation.add_user(user_input)
 
         # 用户说"清理截图/清理产物"等 → 直接清当前会话过程产物，不经过 LLM
@@ -611,6 +655,7 @@ class Agent:
             # 先落盘再 yield 终止块：SSE 消费方收到 stop 即退出，生成器被弃置，
             # yield 之后的代码不会执行（所有终止路径同理）
             self.sessions.save()
+            self._record_coordinator_trace(user_input, self._turn_tool_calls, clean_msg)
             yield ChatResponse(text=clean_msg, finish_reason="stop")
             return
 
@@ -668,13 +713,16 @@ class Agent:
                         args = tc["arguments"]
                         call_id = tool_call_ids[i] if i < len(tool_call_ids) else ""
                         result = self._execute_one(name, args)
+                        self._turn_tool_calls.append({
+                            "tool": name, "args": args,
+                            "ok": bool(result.get("success")),
+                        })
 
                         if not result.get("success") and "拒绝" in result.get("error", ""):
                             self.sessions.save()
-                            yield ChatResponse(
-                                text=self._with_reminder(f"操作已取消：{result['error']}"),
-                                finish_reason="stop",
-                            )
+                            msg = self._with_reminder(f"操作已取消：{result['error']}")
+                            self._record_coordinator_trace(user_input, self._turn_tool_calls, msg)
+                            yield ChatResponse(text=msg, finish_reason="stop")
                             return
 
                         self.conversation.add_tool_result(
@@ -701,6 +749,7 @@ class Agent:
                     if isinstance(self.llm, DeterministicBrain):
                         summary = self._format_deterministic_result(chunk.tool_calls, result)
                         self.sessions.save()
+                        self._record_coordinator_trace(user_input, self._turn_tool_calls, summary)
                         yield ChatResponse(text=self._with_reminder(summary), finish_reason="stop")
                         return
 
@@ -714,6 +763,7 @@ class Agent:
                     if reminder:
                         yield ChatResponse(text=reminder, finish_reason="streaming")
                     self.sessions.save()
+                    self._record_coordinator_trace(user_input, self._turn_tool_calls, chunk.text or "")
                     yield chunk
                     return
             else:
@@ -725,13 +775,16 @@ class Agent:
                     if reminder:
                         yield ChatResponse(text=reminder, finish_reason="streaming")
                     self.sessions.save()
+                    self._record_coordinator_trace(user_input, self._turn_tool_calls, collected_text)
                     yield ChatResponse(finish_reason="stop")
                     return
                 continue
             if stopped:
                 # 用户打断：保留已流出的部分文本，落盘后以 stop chunk 收尾
                 # （stop chunk 携带完整文本，SSE 消费方整体替换，防重复拼接）
-                yield self._stopped_response(collected_text)
+                msg = self._stopped_response(collected_text)
+                self._record_coordinator_trace(user_input, self._turn_tool_calls, msg.text, ok=False)
+                yield msg
                 return
             # 如果 break 了（tool_calls），继续下一轮
             continue
@@ -740,6 +793,7 @@ class Agent:
         summary = f"任务未能在 {self.max_steps} 步内完成，已自动终止。"
         self.conversation.add_assistant(content=summary)
         self.sessions.save()
+        self._record_coordinator_trace(user_input, self._turn_tool_calls, summary, ok=False)
         yield ChatResponse(text=self._with_reminder(summary), finish_reason="stop")
 
     # ============================================================
