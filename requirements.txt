@@ -7,3 +7,4 @@ websocket-client==1.* # 浏览器结构化控制（CDP WebSocket 通信）
 psutil==7.*           # 系统管理工具（进程 / 网络）
 requests==2.*         # LLM 客户端（OpenAICompatibleClient 的 HTTP 调用）
 pyyaml==6.*           # YAML 配置解析（缺省时自动降级为简易解析）
+flask==3.*            # Web 界面（examples/miniyu_web.py 依赖）

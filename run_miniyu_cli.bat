@@ -12,8 +12,9 @@ echo =============================================
 echo   miniyu - Desktop AI Assistant (CLI)
 echo =============================================
 echo.
-echo   First run? Install dependencies:
-echo     pip install -r requirements.txt
+echo   First run? Install dependencies (in cmd from project root):
+echo     py -m venv .venv
+echo     .venv\Scripts\pip install -r requirements.txt
 echo.
 echo   To use a real LLM, edit config.yaml first:
 echo     llm.provider: openai_compatible
@@ -22,5 +23,12 @@ echo   (or set AGENT_LLM_* env vars, see config.yaml comments)
 echo.
 echo   No config = deterministic offline mode (works on any machine)
 echo.
-python examples\agent_cli.py
+
+rem Prefer the project venv created above; fall back to python on PATH
+if exist ".venv\Scripts\python.exe" (
+    set "PY=.venv\Scripts\python.exe"
+) else (
+    set "PY=python"
+)
+%PY% examples\agent_cli.py
 pause

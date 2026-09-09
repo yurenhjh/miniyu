@@ -1,7 +1,128 @@
 # miniyu 桌面 AI 助手 · 使用说明
 
-> 适用：本机已把真实 LLM（阿里云百炼 **qwen3.5-plus**）写进 `config.yaml`，
-> 打开即是真机模式，**不需要再设任何环境变量**。密钥与实现细节见 `docs/evidence/agent_qwen_live.md`。
+> 📌 **第一次自己跑 miniyu（新电脑 / 刚 clone 仓库 / 想换成你自己的 API key）？**
+> 先照下方 **「⚡ 0. 新手必读：从零拉取到能跑」** 的 Linux 或 Windows 分节做完，通常 5～10 分钟就能用起来。
+> 仓库自带的 `config.yaml` 里 key 是**空的**（不填只会进"离线模式"），填上你自己的 key 才是真机对话。
+> 密钥与实现细节见 `docs/evidence/agent_qwen_live.md`。
+
+---
+
+## ⚡ 0. 新手必读：从零拉取到能跑（Linux / Windows）
+
+> 适用：刚把本项目 **clone / 下载到自己的电脑**、想跑起来的人。已在别人配好的电脑上直接能跑的话，可跳到 [2. 怎么启动](#2-怎么启动)。
+
+下面把"从一台相对干净的电脑到能跑"拆成清单，**任选 Linux 或 Windows 一份照做**。两个系统的目标完全一样：
+**装 Python → 拿一把能联网的 API key → 建虚拟环境装依赖 → 生成并填 `config.yaml` → 启动**。
+
+### 0.0 先准备好两样东西（两系统通用）
+
+**① Python 3.10 或更高**
+- Windows：到 [python.org](https://www.python.org/downloads/) 安装，**务必勾选底部 “Add python.exe to PATH”**（装完可能要重开终端）；
+- Linux（Ubuntu 22.04+，自带 3.10/3.12 够用）：`sudo apt update && sudo apt install -y python3 python3-pip python3-venv git`。
+
+装完在终端敲 `python --version`（Linux 敲 `python3 --version`）能看到版本号即通过。
+
+**② 一把 OpenAI 兼容的 API key（下面以阿里云百炼为例）**
+- 到 [百炼控制台](https://dashscope.console.aliyun.com/) 开通模型（本项目默认 **qwen3.5-plus**，是可读图的多模态模型）；
+- 左侧「API-KEY 管理」→ 创建 API-KEY，复制那把 `sk-` 开头的字符串；
+- 记下 `base_url`：百炼统一是 `https://dashscope.aliyuncs.com/compatible-mode/v1`。
+- 用 DeepSeek / OpenAI / 本地 Ollama 等也完全可以：只要对方是 OpenAI 兼容接口，把下面 `base_url / api_key / model` 三个字段换成你自己的即可，其余不用动（各服务商的示例地址见 `config.yaml.example` 注释里的清单）。
+
+**③ 项目代码**（二选一）
+- `git clone https://github.com/yurenhjh/miniyu.git`（需已装 git），或
+- 在仓库网页点 **Code → Download ZIP** 再解压（不需要 git）。
+
+之后的"项目根目录"＝克隆/解压出的那个**同时含 `requirements.txt`、`config.yaml.example`、`run_miniyu_*.sh/.bat`** 的文件夹。下面所有命令都在这个根目录里执行。
+
+### 0.1 Linux（Ubuntu 22.04+）
+
+先试**路 A（一键）**；想每一步都透明再看**路 B（手动）**。
+
+**路 A：一键脚本**
+```bash
+bash setup_linux.sh
+```
+它会做四件事（中途可能要输一次 sudo 密码）：
+1. 装系统级工具 `xdotool wmctrl xclip` + 截图工具——**只**为"桌面自动化"准备；只用网页/命令行对话不需要，可改用 `bash setup_linux.sh --no-apt` 跳过；
+2. 建 `.venv` 虚拟环境并装 `requirements.txt` 全部依赖——这一步**必须走虚拟环境**：Ubuntu 24.04+ 的 Python 3.12 禁止直接 `pip install` 到系统（PEP 668），脚本已自动绕开；
+3. 若没有 `config.yaml` 就从模板生成一份（仓库**已自带 key 留空**的 `config.yaml` 时不动它）；
+4. 检测你当前是 Xorg 还是 Wayland 会话。
+
+**路 B：手动逐步（和脚本做的事一致，看得更清楚）**
+```bash
+# 1) 系统工具（可选：只桌面自动化要；装失败也不影响聊天/网页）
+sudo apt-get install -y xdotool wmctrl xclip scrot
+
+# 2) 虚拟环境 + 依赖（关键：别直接 pip install 系统 python，会撞 PEP 668）
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# 3) 用最新模板生成配置（想含 email / web_search / fallback 等全段，用它最全）
+cp config.yaml.example config.yaml
+```
+然后接着做下方 **[0.3 填配置](#03-填配置linux--windows-同一份文件-configyaml)**。
+
+### 0.2 Windows 10/11
+
+在**文件资源管理器里进入项目根目录**，点地址栏、敲 `cmd` 回车，打开命令行（下面命令都在这个黑窗口里执行）：
+
+```bat
+:: 1) 建虚拟环境（依赖装这里，绝不污染系统 Python）
+py -m venv .venv
+
+:: 2) 装依赖
+.venv\Scripts\pip install -r requirements.txt
+
+:: 3) 从最新模板生成配置
+copy config.yaml.example config.yaml
+```
+> 之后双击 `run_miniyu_web.bat` / `run_miniyu_cli.bat` 启动时，脚本**自动优先用 `.venv\Scripts\python.exe`**；若你跳过建 venv，它也会退回用 PATH 里的 `python`。
+> Windows 的桌面自动化（找窗口 / 给 QQ 类应用自动化 / OCR 截图核对）用的是系统自带能力 + 依赖里的 Pillow，**不需要额外装任何软件**；网页版语音输入要求用 Chrome 或 Edge（Firefox 会自动隐藏该按钮）。
+
+然后做 **[0.3 填配置](#03-填配置linux--windows-同一份文件-configyaml)**。
+
+### 0.3 填配置（Linux / Windows：同一份文件 `config.yaml`）
+
+用任意编辑器打开根目录 `config.yaml`（Windows 记事本即可），**把 `llm` 段的这三行改成你自己的**，其余字段保持默认：
+
+| 字段 | 填什么 | 必填？ |
+|---|---|---|
+| `llm.api_key` | 上一步复制的 `sk-...` | ✅ 必填（空 = 只能离线模式） |
+| `llm.model` | 你开通的模型名，如 `qwen3.5-plus` | ✅ 必填 |
+| `llm.base_url` | 你服务商地址；百炼填 `https://dashscope.aliyuncs.com/compatible-mode/v1` | ✅ 必填 |
+| `llm.supports_vision` | 主模型能读图（如 `qwen3.5-plus` / `qwen-vl-max`）就 `true`（截图理解、OCR 直接让它看图）；纯文本模型（部分 DeepSeek）改 `false`，并按文件内注释另配 `vision_bridge` 段 | 默认 `true` 即可 |
+
+> 只有想**发邮件**才需要再填 `email` 段（SMTP/IMAP + 授权码）；想**本地 Ollama 降级 / 纯离线对话**才动 `fallback` 段。这两段都是可选项、先空着不影响聊天和文件操作，文件注释写得很细，用到再看。
+> ⚠️ `config.yaml` 已被 git 跟踪（模板需随仓库走），内含敏感 key——**只在你本地填，填了之后不要 commit / push 它**。
+
+**仓库自带旧 `config.yaml` vs 最新模板**：仓库里随代码提交的那个 `config.yaml` 是较早的精简版（没有 `fallback` / `web_search` / `email` 等新段）。如果你打开后找不到上面表格里要配的完整注释段，就按 0.1/0.2 的 `cp`/`copy` 命令用 `config.yaml.example` **重建一份再填**，功能最全。
+
+### 0.4 启动并验证（二选一界面）
+
+| 界面 | Linux 启动 | Windows 启动 | 打开后 |
+|---|---|---|---|
+| Web（推荐，鼠标操作） | `bash run_miniyu_web.sh` | 双击 `run_miniyu_web.bat` | 浏览器访问 http://localhost:5000 |
+| 命令行（命令更全） | `bash run_miniyu_cli.sh` | 双击 `run_miniyu_cli.bat` | 终端出现 `miniyu >` 提示符 |
+
+跑通标志：
+- **没填 key** 也能启动，但会提示"离线模式"、只能执行几条预设指令——这是正常的，不是坏了；
+- **填了 key**：Web 顶栏能选到 ☁️ 在线模型并正常聊天；CLI 启动顶部会显示真实模型名（如 `模式: qwen3.5-plus`）。**直接说一句"你好"，能收到回复即成功。**
+
+### 0.5 常见问题
+
+**Linux**
+- `error: externally-managed-environment` → 说明你用了系统 python 直接 `pip install`。改用上面 `.venv` 的方式即可（脚本/路 B 已覆盖）；不要用 `--break-system-packages` 硬装。
+- `ModuleNotFoundError: flask` → 依赖没装进**正在运行的同一个 python**。确认用 `.venv/bin/python` 启动（`run_miniyu_*.sh` 已自动处理）；若手敲 `python3 examples/...` 报错，先 `.venv/bin/pip install -r requirements.txt`。
+- Wayland 下桌面自动化（找窗口/点屏幕/给应用打字）不可用 → 登录界面齿轮里改选 **Ubuntu on Xorg** 再登录；只用聊天/文件则不受影响。
+- 语音按钮不显示 → 换 Chrome / Edge（它走浏览器原生语音识别，Firefox 不支持）。
+
+**Windows**
+- `'python'/'py' 不是内部或外部命令` → 装 Python 时没勾 "Add python.exe to PATH"，或装完没重开终端；重装时勾上。
+- 双击 `.bat` 一闪而过、看不到报错 → 别双击；在项目根目录 cmd 里直接跑 `.venv\Scripts\python examples\miniyu_web.py`，就能看到具体错误。
+- PowerShell 里粘贴命令报错（`::`、`&` 解析问题）→ 换 **cmd**（Win+R 输入 `cmd` 回车）执行最稳。
+- 想用语音 / 让它在 QQ 类应用里自动化 → 确保用 Chrome/Edge，且 QQ 等已登录并开着。
+
+配置好后日常怎么启动、怎么接本地 Ollama、怎么切离线脑，见下文 **[2. 怎么启动](#2-怎么启动)**。
 
 ---
 
