@@ -29,15 +29,32 @@ set AGENT_LLM_MODEL=gpt-4o-mini
 python examples/agent_cli.py
 ```
 
-### 可移植性
+### 可移植性（Windows + Linux 双平台，可发给他人）
 
-整个项目使用**相对路径**，无硬编码绝对路径。别人拿到项目后：
-1. `pip install -r requirements.txt`
-2. 编辑 `config.yaml`（可选）
-3. `python examples/agent_cli.py` 或双击 `run_miniyu_cli.bat`
+整个项目使用**相对路径**（无硬编码绝对路径）+ `pathlib` 跨平台路径 + `platform.system()` 自动适配，核心（工具注册 / OS Skills / Web CLI）在 Windows 与 Ubuntu 上同一套代码运行；应用/浏览器控制层为双实现（`app_controller` 分 `WindowsAppController` / `LinuxAppController`，`browser_controller` 用跨平台 CDP）。
 
-即能在任何 Windows 机器上运行。
+**给别人部署（他的机器、他的 key，只用 4 步）：**
+```bash
+# 1. 装依赖（config.yaml 里的 key 是你自己的、不入库，别人拿到的是空模板）
+pip install -r requirements.txt
 
+# 2. 从模板生成自己的配置并填 key（关键！别用我仓库里那份）
+cp config.yaml.example config.yaml
+#    编辑 config.yaml：填你自己的 llm.api_key / llm.model；主模型无视觉再填 vision_bridge；
+#    要发邮件填 email 段；要本地降级装 Ollama 并填 fallback 段。
+
+# 3.（Linux 桌面自动化）装系统工具 + 脚本一键配置
+bash setup_linux.sh          # 装 xdotool/wmctrl/xclip/gnome-screenshot + python 依赖 + 生成配置
+
+# 4. 启动（Windows 用运行 .bat，Linux 用 .sh）
+python examples/miniyu_web.py    # 或 run_miniyu_web.bat / bash run_miniyu_web.sh
+```
+
+**语音输入浏览器要求：一键语音（🎤）用浏览器原生 Web Speech API**，仅 **Chrome / Edge** 支持；Windows 上**推荐 Edge**（走微软语音服务、国内可用），Chrome 走谷歌服务大陆常连不上。其余浏览器自动隐藏该按钮、不影响文字输入。
+
+> **近期变更（2026-09-09）**
+> - **Linux（Ubuntu）可移植性落地 + 他人部署**：核心代码本就双平台（相对路径 / pathlib / `platform.system()` 适配；`app_controller` 分 Windows/Linux 实现；`browser_controller` 跨平台 CDP）。本轮新增：① `setup_linux.sh`（一键装 `xdotool/wmctrl/xclip/gnome-screenshot` 等系统依赖 + Python 依赖 + 从模板生成 `config.yaml` + 检测 Wayland/Xorg）；② `run_miniyu_web.sh` / `run_miniyu_cli.sh`（Linux 启动脚本，等价于 .bat）；③ `LinuxAppController` 自动检测 **Wayland 会话**并提示切 Xorg（xdotool/wmctrl 是 X11 工具，Wayland 下桌面自动化不可用，仅文件管理/Web 聊天不受影响）；④ `.gitattributes` 锁定 `.sh` 为 LF 行尾；⑤ `config.yaml.example` 补齐 `web_search.code_interpreter` 新字段。**发给他人**：他的机器 `cp config.yaml.example config.yaml` 填自己的 key 即可完整使用，你的 key/本地模型不随代码分发。
+>
 > **近期变更（2026-09-08）**
 > - **百炼服务端代码解释器（数学计算/数据分析）**：纯计算回合（如「123的21次方是多少？」）自动启用百炼云端 Python 沙箱（`enable_code_interpreter`），模型不再硬算或乱报，返回**逐位精确**结果（实测 123²¹ 全对）；涉及本地文件/系统操作的提问照常走本地工具，两者自动分流。模型不支持时客户端自动探测停用，不影响正常对话（开关 `web_search.code_interpreter`，默认开）。
 > - **前端布局锁定 + 工具调用折叠面板**：页面整体**固定于视口**（html/body 禁滚动、禁横向溢出），滚动只发生在聊天区内部——整个界面不再能被划出窗口；工具调用改成像深度思考一样的**折叠面板**——默认收起为一行「工具调用 (N 个) ▼」，点标题展开/再点收起，展开后**限高 260px、超出在框内滑动查看**，不再占据大片输出区。
@@ -879,3 +896,9 @@ python -m pytest tests/test_agent_read_web.py -v
 - **编码安全**：`safe_print()` 函数防止 Windows GBK 终端崩溃
 - **系统检测**：通过 `platform.system()` 自动识别并适配
 - **默认路径**：下载目录、临时目录自动适配各系统
+
+Linux 使用要点（Ubuntu 22.04+，详见 `setup_linux.sh` / `run_miniyu_*.sh`）：
+- **启动**：`bash setup_linux.sh`（一键装依赖+生成配置）→ `bash run_miniyu_web.sh`（或命令行 `run_miniyu_cli.sh`）。
+- **桌面自动化需 X11（Xorg）会话**：`app_controller` 的 Linux 实现基于 `xdotool`/`wmctrl`/`xclip`/`gnome-screenshot`，这些是 X11 工具。Ubuntu 默认 **Wayland** 会话下它们不可用——本机检测到 Wayland 会提示切「Ubuntu on Xorg」。仅做文件管理 / Web 聊天不受影响。
+- **语音输入**：浏览器原生 Web Speech API，仅 **Chrome / Edge** 支持（Edge 推荐、国内可用）。
+- **发给他人**：他的机器 `cp config.yaml.example config.yaml` 填自己的 key 即可完整使用；你的 API key 与本地模型不随代码分发（`config.yaml` 含敏感字段、不入库，靠 `.gitignore` + skip-worktree 保护）。

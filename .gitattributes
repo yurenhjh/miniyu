@@ -1,0 +1,4 @@
+# 强制脚本用一致行尾，避免 Windows 检出 CRLF 破坏 .sh（bash 不认 \r）
+*.sh text eol=lf
+*.bat text eol=crlf
+*.py text eol=lf

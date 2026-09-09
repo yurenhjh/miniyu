@@ -35,6 +35,12 @@ miniyu 是一个 LLM 驱动的桌面 AI 助手：你可以**正常聊天**，也
 
 ## 2. 怎么启动
 
+### 系统与浏览器要求（先看这个）
+- **操作系统**：Windows 10/11 或 **Ubuntu 22.04 及以上**（核心代码同一套，双平台通用）。
+- **语音输入（🎤 按钮）必须用 Edge 或 Chrome**：Web 界面的语音识别用的是浏览器原生 Web Speech API，只有 **Chrome / Edge** 支持。**正式用推荐 Edge**——它走微软语音服务、国内可用；Chrome 走谷歌服务，大陆常常连不上。用别的浏览器（如 Firefox）时那个按钮会自动隐藏，不影响打字输入。
+- **桌面自动化（仅 Linux）需 X11/Xorg 会话**：Ubuntu 默认是 Wayland，`xdotool`/`wmctrl` 这些 X11 工具在 Wayland 下用不了。要用"找窗口/点屏幕/给 QQ 类应用自动化"时，请在登录界面点齿轮 → 选 **「Ubuntu on Xorg」** 再登录；只用文件管理 / Web 聊天则无所谓。
+- **网络**：用在线模型（如阿里云百炼）需要能访问对应 API；想完全离线可用本地 Ollama 模型（见下方）。
+
 在项目根目录打开终端，二选一：
 
 ```powershell
@@ -43,6 +49,16 @@ python examples/miniyu_web.py
 
 # 命令行
 python examples/agent_cli.py
+```
+
+**Linux（Ubuntu）启动**——项目根目录执行：
+```bash
+# 第一次：一键装依赖+生成 config.yaml（装桌面自动化工具需要 sudo 密码）
+bash setup_linux.sh
+
+# 之后每次启动二选一：
+bash run_miniyu_web.sh   # 网页版（用 Edge/Chrome 打开）
+bash run_miniyu_cli.sh   # 命令行
 ```
 
 启动后直接说话即可，比如：
@@ -238,10 +254,49 @@ miniyu 干活过程中为“看屏幕理解情况”自动截的图等**过程�
 | 问数学计算题（如 123 的 21 次方）它会算准吗？ | 纯计算/数据分析题会自动启用**百炼服务端代码解释器**——模型在云端沙箱里写并运行 Python，返回**逐位精确**结果（实测 123²¹ 全对），不再硬算/乱报。前提：用百炼在线模型、且 `config.yaml` 的 `web_search.code_interpreter` 保持开（默认开，不需要可在该文件关掉省 token）。模型不支持时系统自动探测停用、照常回答；涉及本地文件/系统的提问不受影响，照常走本地工具 |
 | 工具调用显示太多、占屏幕？ | 已改为**折叠面板**（09-08）：默认只显示一行「工具调用 (N 个) ▼」，点开才展开详情（限高、超出可滚动），看完再点收起——不占输出区，又能审计模型干了什么 |
 | 整个页面能被划出窗口/横向拖动？ | 已修（09-08）：页面整体固定在浏览器窗口里，滚动只发生在聊天区内部，不会再出现整页被划出/左右滑动 |
+| 网页里没有 🎤 语音按钮？ | **语音输入只用浏览器原生 Web Speech API，只有 Chrome / Edge 支持**。推荐 Edge（走微软语音、国内可用），Chrome 走谷歌服务大陆常连不上。用 Firefox 等其它浏览器会自动隐藏该按钮，打字输入不受影响 |
+| 点了 🎤 没声音/没字？ | ① 先确认你有麦克风、点地址栏左侧 🔒 授予麦克风权限；② 语音识别依赖浏览器云端服务，`network` 错误多因网络/服务不可用，可**换 Edge** 或直接打字；③ 它是**持续倾听**，说话停顿不结束，要点 🎤 二次点击才关闭并上屏，别以为卡住了 |
+| 在 Linux（Ubuntu）上怎么用？ | ① `bash setup_linux.sh` 一键装依赖+生成配置；② `bash run_miniyu_web.sh` 或 `run_miniyu_cli.sh` 启动；③ 用桌面自动化（找窗口/点击/截图）要先在登录界面选 **「Ubuntu on Xorg」**（xdotool 是 X11 工具，默认 Wayland 会话不可用），仅文件管理/聊天不受影响 |
+| 想把这份代码发给同学/换台电脑用？ | 见第 7 节「给别人部署」——核心就一句：`cp config.yaml.example config.yaml` 后填**他自己的** key；开发者的 key 和本地模型不随代码分发 |
 
 ---
 
-## 7. 目录速查
+## 7. 给别人部署（换机器 / 发给同学）
+
+**这是一份"个人钥匙不在代码里、谁都能配成自己可用的"项目。** 你本地那份 `config.yaml` 里是你的 API key / 邮箱授权码 / 本地模型名，**不要**把它发给别人；发出去的是代码 + 空模板，对方自己填自己的即可完整使用。
+
+**对方拿到后（Windows / Ubuntu 通用，约 4 步）：**
+
+```bash
+# 1）装依赖（Python 3.10+）
+pip install -r requirements.txt
+
+# 2）从模板生成自己的配置，并填自己的 key（关键一步）
+cp config.yaml.example config.yaml      # Windows 用: copy config.yaml.example config.yaml
+#    编辑 config.yaml：
+#      · llm.api_key / llm.model —— 必填，你自己的主对话 API（百炼/OpenAI/DeepSeek 皆可，格式见模板）
+#      · llm.supports_vision / vision_bridge —— 主模型无视觉时再填一段独立视觉 API
+#      · email.* —— 只用“发邮件”才需要（授权码是敏感字段，自己填、别分享）
+#      · fallback.* —— 想免费离线降级就装 Ollama 并填本地模型（见第 2 节）
+#      · web_search.enabled —— 联网/百炼代码解释器开关，按自己需求保留
+
+# 3）Linux 桌面自动化额外装系统工具（可选；Windows 跳过）
+bash setup_linux.sh        # 装 xdotool/wmctrl/xclip/gnome-screenshot + 生成配置
+
+# 4）启动
+python examples/miniyu_web.py    # Windows 也双击 run_miniyu_web.bat；Linux 用 bash run_miniyu_web.sh
+```
+
+**没填 key 直接启动**会进**离线模式**（只认预设指令、不能真对话），一样能跑通全流程做演示。
+
+**三句提醒：**
+1. `api_key` / 邮箱 `auth_code` 是敏感字段，**只在你本地填、绝不 commit / 发群**——项目 `.gitignore` 和 git 的 skip-worktree 已帮你兜底，但你自己也要注意别把改好的 `config.yaml` 打包发出去。
+2. 想用本地模型降级，**对方要自己下载**：`ollama pull <模型名>`（本地模型不出现在你发的包里）。
+3. `conversations/`（聊天记录）和 `%TEMP%/miniyu_artifacts`（过程产物）也是本地生成的，不在包里。
+
+---
+
+## 8. 目录速查
 
 | 路径 | 是什么 |
 |---|---|
@@ -260,4 +315,4 @@ miniyu 干活过程中为“看屏幕理解情况”自动截的图等**过程�
 
 ---
 
-*最后整理：2026-09-08 · 第4组 miniyu*
+*最后整理：2026-09-09 · 第4组 miniyu*

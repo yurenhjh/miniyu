@@ -13,6 +13,7 @@ app_controller.py
 - 每个动作都返回可 JSON 序列化的结果，失败抛异常由 ToolRegistry 统一捕获。
 """
 
+import os
 import platform
 import subprocess
 import tempfile
@@ -447,6 +448,18 @@ class LinuxAppController(BaseAppController):
     - wmctrl:   窗口枚举
     - gnome-screenshot / scrot: 截图
     """
+
+    def __init__(self):
+        # xdotool/wmctrl 基于 X11（Xorg）。Ubuntu 22.04 默认跑 Wayland 会话，
+        # 那里这些工具不可用（会报错或截不到其它应用窗口）。提前检测并给明确指引，
+        # 而不是等运行时才一脸懵地"wmctrl not found"。检测到 XWayland（DISPLAY 存在）
+        # 时只警告不阻断——部分场景仍能工作。
+        sess = os.environ.get("XDG_SESSION_TYPE", "").lower()
+        if sess == "wayland" and os.environ.get("DISPLAY"):
+            print("[miniyu] 提示：检测到 Wayland 会话。xdotool/wmctrl 是 X11 工具，"
+                  "在 Wayland 下桌面自动化（找窗口/点击/截图别应用）可能不可用。\n"
+                  "     Ubuntu 用户可在登录界面点击齿轮 → 选『Ubuntu on Xorg』切换，"
+                  "即可完整使用桌面自动化功能。")
 
     def _require(self, cmd):
         """检查命令是否可用"""
