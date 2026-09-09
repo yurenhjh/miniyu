@@ -53,6 +53,9 @@ python examples/miniyu_web.py    # 或 run_miniyu_web.bat / bash run_miniyu_web.
 **语音输入浏览器要求：一键语音（🎤）用浏览器原生 Web Speech API**，仅 **Chrome / Edge** 支持；Windows 上**推荐 Edge**（走微软语音服务、国内可用），Chrome 走谷歌服务大陆常连不上。其余浏览器自动隐藏该按钮、不影响文字输入。
 
 > **近期变更（2026-09-09）**
+> - **第 4 组提交文档补齐（docs/）**：对照任务设计书评分/验收，新增 5 份可提交文档——`docs/第4组调研报告.md`、`docs/第4组设计文档.md`、`docs/第4组单元测试报告.md`、`docs/第4组联调与集成报告.md`、`docs/第4组交付说明.md`（含提交/打包清单与一键复现）。功能面核对第 4 组要求**无缺失且超额**（59 工具 + 26 技能 + 调用统计 + 工具签名 + 57 Mock + 512 测试全绿），本轮无需改代码。
+>
+> **近期变更（2026-09-09）**
 > - **Linux（Ubuntu）可移植性落地 + 他人部署**：核心代码本就双平台（相对路径 / pathlib / `platform.system()` 适配；`app_controller` 分 Windows/Linux 实现；`browser_controller` 跨平台 CDP）。本轮新增：① `setup_linux.sh`（一键装 `xdotool/wmctrl/xclip/gnome-screenshot` 等系统依赖 + Python 依赖 + 从模板生成 `config.yaml` + 检测 Wayland/Xorg）；② `run_miniyu_web.sh` / `run_miniyu_cli.sh`（Linux 启动脚本，等价于 .bat）；③ `LinuxAppController` 自动检测 **Wayland 会话**并提示切 Xorg（xdotool/wmctrl 是 X11 工具，Wayland 下桌面自动化不可用，仅文件管理/Web 聊天不受影响）；④ `.gitattributes` 锁定 `.sh` 为 LF 行尾；⑤ `config.yaml.example` 补齐 `web_search.code_interpreter` 新字段。**发给他人**：他的机器 `cp config.yaml.example config.yaml` 填自己的 key 即可完整使用，你的 key/本地模型不随代码分发。
 >
 > **近期变更（2026-09-08）**
