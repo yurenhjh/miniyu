@@ -13,6 +13,11 @@ test_output.txt
 # 之后在本地填回时不要再 commit 它。本行不忽略 config.yaml（模板需随仓库走）。
 conversations/
 
+# ---- 演示脚手架 / 临时产物（不入库） ----
+demo_downloads/
+test.txt
+doc_demo_result.json
+
 # ---- Python ----
 __pycache__/
 *.py[cod]
