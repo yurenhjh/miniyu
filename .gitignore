@@ -9,8 +9,13 @@ test_output.txt
 *.log
 
 # ---- 运行时数据 / 用户会话 ----
-# config.yaml 是唯一可能含 API key 的文件：入库前务必把 api_key 留空，
-# 之后在本地填回时不要再 commit 它。本行不忽略 config.yaml（模板需随仓库走）。
+# config.yaml 照常入库（仓库里那份 api_key 为空，可当默认配置直接用）；
+# 本机版本填了真实 API key，已用 skip-worktree 保护：本地改动 git 一律看不见，
+# commit -a / add -A 都带不走它。对已跟踪文件写 ignore 无效，别再往这里加 config.yaml。
+#   查状态：git ls-files -v config.yaml     # 行首 S = 已保护
+#   解保护：git update-index --no-skip-worktree config.yaml
+#   危险：  git reset --hard / git checkout config.yaml 会用仓库版覆盖本地文件、冲掉 key
+# 分发/分享用模板 config.yaml.example（api_key 同样留空）。
 conversations/
 
 # ---- 演示脚手架 / 临时产物（不入库） ----
