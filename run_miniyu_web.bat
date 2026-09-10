@@ -24,6 +24,12 @@ echo.
 echo   No config = deterministic offline mode (works on any machine)
 echo.
 
+rem Use UTF-8 for the console and for Python's stdout. Without this, Python
+rem raises UnicodeEncodeError on a Chinese (GBK) Windows whenever stdout is a
+rem pipe or a redirected file, because agent_cli.py prints emoji.
+chcp 65001 >nul
+set PYTHONIOENCODING=utf-8
+
 rem Prefer the project venv created above; fall back to python on PATH
 if exist ".venv\Scripts\python.exe" (
     set "PY=.venv\Scripts\python.exe"

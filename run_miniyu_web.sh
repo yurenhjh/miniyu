@@ -23,4 +23,8 @@ else
     PY=python3
     command -v "$PY" >/dev/null 2>&1 || PY=python
 fi
+
+# 强制 UTF-8 输出：agent_cli.py 里有 emoji，中文 Windows 的 GBK 控制台
+# 在输出被重定向/管道时会抛 UnicodeEncodeError（Linux 上无副作用）。
+export PYTHONIOENCODING=utf-8
 exec "$PY" examples/miniyu_web.py

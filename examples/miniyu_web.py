@@ -28,6 +28,15 @@ import uuid
 import time
 from pathlib import Path
 
+# Windows 中文控制台默认 GBK，本文件里有 emoji，print 会抛 UnicodeEncodeError
+# ——输出被重定向到文件/管道（IDE 运行窗口、python x.py > log.txt）时必现。
+# 统一把 stdout/stderr 改成 UTF-8；Linux/macOS 本来就是 UTF-8，这里是空操作。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):  # 被替换成非 TextIOWrapper 时忽略
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flask import Flask, request, jsonify, Response, send_from_directory

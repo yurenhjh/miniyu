@@ -185,6 +185,7 @@ run_miniyu_web.bat   :: 网页版（会自动打开浏览器）
 run_miniyu_cli.bat   :: 命令行
 ```
 > 双击 `.bat` 也行，脚本会自动用 `.venv\Scripts\python.exe`。手敲则写全：`.venv\Scripts\python examples\miniyu_web.py`。
+> Windows 上**直接敲 `python examples\miniyu_web.py` / `python examples\agent_cli.py` 也可以**（PATH 里的 `python` 装了依赖即可）。入口已强制 UTF-8 输出，中文控制台下把输出重定向到文件/管道不会再报 `UnicodeEncodeError`。
 
 启动后直接说话即可，比如：
 
@@ -394,8 +395,9 @@ miniyu 干活过程中为“看屏幕理解情况”自动截的图等**过程�
 **对方拿到后（Windows / Ubuntu 通用，约 4 步）：**
 
 ```bash
-# 1）装依赖（Python 3.10+）
-pip install -r requirements.txt
+# 1）装依赖到项目内虚拟环境（Python 3.10+；Ubuntu 24.04+ 直接 pip 装系统 Python 会撞 PEP 668）
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+#    Windows 用: py -m venv .venv && .venv\Scripts\pip install -r requirements.txt
 
 # 2）从模板生成自己的配置，并填自己的 key（关键一步）
 cp config.yaml.example config.yaml      # Windows 用: copy config.yaml.example config.yaml
@@ -409,8 +411,8 @@ cp config.yaml.example config.yaml      # Windows 用: copy config.yaml.example 
 # 3）Linux 桌面自动化额外装系统工具（可选；Windows 跳过）
 bash setup_linux.sh        # 装 xdotool/wmctrl/xclip/gnome-screenshot + 生成配置
 
-# 4）启动
-python examples/miniyu_web.py    # Windows 也双击 run_miniyu_web.bat；Linux 用 bash run_miniyu_web.sh
+# 4）启动（用启动脚本，它会自动挑对 .venv 里的 Python）
+bash run_miniyu_web.sh           # Windows：双击 run_miniyu_web.bat
 ```
 
 **没填 key 直接启动**会进**离线模式**（只认预设指令、不能真对话），一样能跑通全流程做演示。

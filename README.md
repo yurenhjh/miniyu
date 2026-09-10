@@ -17,6 +17,8 @@ bash run_miniyu_web.sh         # Windows：双击 run_miniyu_web.bat
 ```
 
 > 启动脚本会自动优先用项目内 `.venv` 的 Python。**在 Ubuntu 上直接敲 `python examples/miniyu_web.py` 会报 `ModuleNotFoundError: No module named 'flask'`**（`python` 指向系统 Python，依赖装在 `.venv` 里）。要手敲就写全解释器：`.venv/bin/python examples/miniyu_web.py`（Windows：`.venv\Scripts\python examples\miniyu_web.py`）。
+>
+> **Windows 上可以直接敲 `python examples\miniyu_web.py` / `python examples\agent_cli.py`**（PATH 里的 `python` 装了依赖即可，如 Anaconda 自带 flask）。两个入口已强制 UTF-8 输出，中文（GBK）控制台把输出重定向到文件/管道、或在 IDE 运行窗口里跑，也不会再抛 `UnicodeEncodeError`。
 
 ### 使用真实 LLM
 
