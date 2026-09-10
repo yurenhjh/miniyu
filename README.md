@@ -10,11 +10,13 @@
 
 ```bash
 # 终端界面
-python examples/agent_cli.py
+bash run_miniyu_cli.sh         # Windows：双击 run_miniyu_cli.bat
 
-# Web 界面（需 pip install flask）
-python examples/miniyu_web.py
+# Web 界面（依赖 flask）
+bash run_miniyu_web.sh         # Windows：双击 run_miniyu_web.bat
 ```
+
+> 启动脚本会自动优先用项目内 `.venv` 的 Python。**在 Ubuntu 上直接敲 `python examples/miniyu_web.py` 会报 `ModuleNotFoundError: No module named 'flask'`**（`python` 指向系统 Python，依赖装在 `.venv` 里）。要手敲就写全解释器：`.venv/bin/python examples/miniyu_web.py`（Windows：`.venv\Scripts\python examples\miniyu_web.py`）。
 
 ### 使用真实 LLM
 
@@ -35,8 +37,9 @@ python examples/agent_cli.py
 
 **给别人部署（他的机器、他的 key，只用 4 步）：**
 ```bash
-# 1. 装依赖（config.yaml 里的 key 是你自己的、不入库，别人拿到的是空模板）
-pip install -r requirements.txt
+# 1. 装依赖到项目内虚拟环境（Ubuntu 24.04+ 直接 pip 装系统 Python 会撞 PEP 668）
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+#    Windows：py -m venv .venv && .venv\Scripts\pip install -r requirements.txt
 
 # 2. 从模板生成自己的配置并填 key（关键！别用我仓库里那份）
 cp config.yaml.example config.yaml
@@ -46,8 +49,8 @@ cp config.yaml.example config.yaml
 # 3.（Linux 桌面自动化）装系统工具 + 脚本一键配置
 bash setup_linux.sh          # 装 xdotool/wmctrl/xclip/gnome-screenshot + python 依赖 + 生成配置
 
-# 4. 启动（Windows 用运行 .bat，Linux 用 .sh）
-python examples/miniyu_web.py    # 或 run_miniyu_web.bat / bash run_miniyu_web.sh
+# 4. 启动（用启动脚本，它会自动挑对 .venv 里的 Python）
+bash run_miniyu_web.sh           # Windows：run_miniyu_web.bat
 ```
 
 **语音输入浏览器要求：一键语音（🎤）用浏览器原生 Web Speech API**，仅 **Chrome / Edge** 支持；Windows 上**推荐 Edge**（走微软语音服务、国内可用），Chrome 走谷歌服务大陆常连不上。其余浏览器自动隐藏该按钮、不影响文字输入。
@@ -294,18 +297,18 @@ set AGENT_LLM_MODEL=deepseek-chat
 
 ```bash
 # 离线模式（默认，零依赖）— 终端界面
-python examples/agent_cli.py
-# 或双击 run_miniyu_cli.bat
+bash run_miniyu_cli.sh          # Windows：双击 run_miniyu_cli.bat
 
-# 离线模式 — Web 界面（需 pip install flask）
-python examples/miniyu_web.py
-# 或双击 run_miniyu_web.bat
+# 离线模式 — Web 界面（依赖 flask）
+bash run_miniyu_web.sh          # Windows：双击 run_miniyu_web.bat
+# 手敲命令必须用 venv 解释器（否则 Ubuntu 上报 ModuleNotFoundError: flask）：
+#   .venv/bin/python examples/miniyu_web.py
 
 # 真实 LLM 模式（终端或 Web 都可）
 set AGENT_LLM_PROVIDER=openai_compatible
 set AGENT_LLM_BASE_URL=https://api.openai.com/v1
 set AGENT_LLM_API_KEY=sk-xxx
-python examples/agent_cli.py
+bash run_miniyu_cli.sh
 ```
 
 ---

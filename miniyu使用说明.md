@@ -147,10 +147,12 @@ miniyu 是一个 LLM 驱动的桌面 AI 助手：你可以**正常聊天**，也
 
 两种界面，同一套内核：
 
-| 界面 | 启动命令 | 特点 |
-|---|---|---|
-| 网页版 | `python examples/miniyu_web.py` | 打开 http://localhost:5000，鼠标操作 |
-| 命令行 | `python examples/agent_cli.py` | 终端里打字，命令更全 |
+| 界面 | Linux 启动 | Windows 启动 | 特点 |
+|---|---|---|---|
+| 网页版 | `bash run_miniyu_web.sh` | 双击 `run_miniyu_web.bat` | 打开 http://localhost:5000，鼠标操作 |
+| 命令行 | `bash run_miniyu_cli.sh` | 双击 `run_miniyu_cli.bat` | 终端里打字，命令更全 |
+
+> 这两个启动脚本会自动挑对 Python（**项目内 `.venv` 优先**）。**别直接敲 `python examples/miniyu_web.py`**——原因见 [2. 怎么启动](#2-怎么启动)。
 
 ---
 
@@ -162,17 +164,9 @@ miniyu 是一个 LLM 驱动的桌面 AI 助手：你可以**正常聊天**，也
 - **桌面自动化（仅 Linux）需 X11/Xorg 会话**：Ubuntu 默认是 Wayland，`xdotool`/`wmctrl` 这些 X11 工具在 Wayland 下用不了。要用"找窗口/点屏幕/给 QQ 类应用自动化"时，请在登录界面点齿轮 → 选 **「Ubuntu on Xorg」** 再登录；只用文件管理 / Web 聊天则无所谓。
 - **网络**：用在线模型（如阿里云百炼）需要能访问对应 API；想完全离线可用本地 Ollama 模型（见下方）。
 
-在项目根目录打开终端，二选一：
+在项目根目录打开终端，**按你的系统用对应的一组命令**（每组里「网页版 / 命令行」二选一）：
 
-```powershell
-# 网页版（会自动打开浏览器）
-python examples/miniyu_web.py
-
-# 命令行
-python examples/agent_cli.py
-```
-
-**Linux（Ubuntu）启动**——项目根目录执行：
+**Linux（Ubuntu）**——项目根目录执行：
 ```bash
 # 第一次：一键装依赖+生成 config.yaml（装桌面自动化工具需要 sudo 密码）
 bash setup_linux.sh
@@ -181,13 +175,23 @@ bash setup_linux.sh
 bash run_miniyu_web.sh   # 网页版（用 Edge/Chrome 打开）
 bash run_miniyu_cli.sh   # 命令行
 ```
+> 这两个脚本会自动优先用项目里的 `.venv/bin/python`（依赖全装在它下面）。
+>
+> ⚠️ **不要手敲 `python examples/miniyu_web.py`**：Ubuntu 上 `python` 指向**系统 Python**，而依赖装在 `.venv` 里，会直接报 `ModuleNotFoundError: No module named 'flask'`（Ubuntu 24.04+ 还有 PEP 668 保护，也不让往系统 Python 里 `pip install`）。确实想手敲命令，就把解释器写全——`.venv/bin/python examples/miniyu_web.py`，或先 `source .venv/bin/activate` 再敲 `python`。
+
+**Windows 10/11**——项目根目录 cmd 里执行：
+```bat
+run_miniyu_web.bat   :: 网页版（会自动打开浏览器）
+run_miniyu_cli.bat   :: 命令行
+```
+> 双击 `.bat` 也行，脚本会自动用 `.venv\Scripts\python.exe`。手敲则写全：`.venv\Scripts\python examples\miniyu_web.py`。
 
 启动后直接说话即可，比如：
 
 > ⚠️ **首次使用 / 把这套代码给别人 / 自己重新部署之前，必看**：
 > 1. **换成你自己的 API key 和模型**：仓库里的 `config.yaml` 现在是**开发者的账号配置**，别直接用别人的。打开 `config.yaml` 的 `llm` 段，把 `api_key` 改成你自己的密钥、`base_url` / `model` 配成你要用的服务（格式见 `config.yaml.example`，支持 OpenAI 兼容的任何服务）。没填 key 也能启动，但只会进**离线模式**（只认预设指令、不能真对话）。
 > 2. **想用本地模型？得自己下载**（见下方「可选：使用本地 Ollama 模型」）。
-> 3. 填好后重启（Ctrl+C 停、再 `python examples/miniyu_web.py`）。
+> 3. 填好后重启（Ctrl+C 停、再 `bash run_miniyu_web.sh`；Windows 双击 `run_miniyu_web.bat`）。
 
 ---
 
