@@ -872,9 +872,38 @@ class Agent:
             return self._execute_screen_inspect(args)
         if name == "read_image":
             return self._execute_read_image(args)
+        blocked = self._sandbox_guard(name, args)
+        if blocked is not None:
+            return blocked
         if self.api.is_agent_skill(name):
             return self._execute_skill(name, args)
         return self._execute_tool(name, args)
+
+    def _sandbox_guard(self, name: str, args: dict) -> dict | None:
+        """SecuritySandbox 第一层硬拦截：危险指令不可逆，绕过确认门直接拒绝。
+
+        run_command 等带 cmd/command 参数的工具若命中 DANGEROUS_ACTIONS
+        （rm/format/shutdown/dd/mkfs/fdisk/Stop-Computer 等）或受保护路径，
+        直接返回拒绝结果并记审计，避免"确认弹窗被误点"的社交工程绕过。
+        """
+        if self.coordinator is None or not isinstance(args, dict):
+            return None
+        cmd = ""
+        for k in ("cmd", "command"):
+            v = args.get(k)
+            if isinstance(v, str) and v.strip():
+                cmd = v.strip()
+                break
+        if not cmd:
+            return None
+        check = self.coordinator.sandbox.check_permission(cmd, cmd)
+        if check.get("approved"):
+            return None
+        return {
+            "success": False,
+            "tool": name,
+            "error": check.get("reason", "安全沙箱拦截"),
+        }
 
     def _execute_tool(self, name: str, args: dict) -> dict:
         """执行单个底层工具（含安全确认）"""

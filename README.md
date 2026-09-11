@@ -57,6 +57,10 @@ bash run_miniyu_web.sh           # Windows：run_miniyu_web.bat
 
 **语音输入浏览器要求：一键语音（🎤）用浏览器原生 Web Speech API**，仅 **Chrome / Edge** 支持；Windows 上**推荐 Edge**（走微软语音服务、国内可用），Chrome 走谷歌服务大陆常连不上。其余浏览器自动隐藏该按钮、不影响文字输入。
 
+> **近期变更（2026-09-11）**
+> - **安全机制实测 + 危险指令硬拦截接入 Agent 执行链**：Web 界面（真实 LLM qwen3.7-flash，最低授权 base 档）实测危险操作——`rm -rf /`、`format` 被直接拒绝；`shutdown` 修复前只弹确认窗，**修复后直接拒绝**（新增 `core/agent.py` `_sandbox_guard`：run_command 等带 cmd 参数的工具命中 `DANGEROUS_ACTIONS` 绕过确认门硬拦截，杜绝"确认弹窗被误点"的社交工程绕过；`DANGEROUS_ACTIONS` 扩充 Windows/PowerShell 变体 Stop-Computer/Restart-Computer/Remove-Item）。新增 `tests/test_agent.py::TestSandboxGuard` 13 例，**552 全绿**；实测截图入 `docs/evidence/security_test_*.png`，记录见 `docs/第4组安全机制验证记录.md`。
+> - **README 收尾更新**：第 4 周计划 4 项全部标记完成 ✅（工具签名/权限控制/整体集成/最终报告与PPT）；测试数 494 → **539** 全量更新（10. 运行测试 / 13. 技术特点 / 14. 跨平台兼容）。
+
 > **近期变更（2026-09-09）**
 > - **第 4 组提交文档补齐（docs/）**：对照任务设计书评分/验收，新增 5 份可提交文档——`docs/第4组调研报告.md`、`docs/第4组设计文档.md`、`docs/第4组单元测试报告.md`、`docs/第4组联调与集成报告.md`、`docs/第4组交付说明.md`（含提交/打包清单与一键复现）。功能面核对第 4 组要求**无缺失且超额**（59 工具 + 26 技能 + 调用统计 + 工具签名 + 57 Mock + 512 测试全绿），本轮无需改代码。
 > - **第 5 组职责补齐（整体设计完整性）**：对照设计书「系统协调+安全+RAG」核查，安全层早已完整，**补齐 4 项缺失**——新增 `core/coordinator.py`：`SystemCoordinator`（模块编排 1→5→2→3→4 数据流）+ `SecuritySandbox`（四层安全：权限/沙箱/签名/隐私）+ `RAGKnowledgeBase`（轻量向量检索执行轨迹，零依赖）+ `AuditLog`（审计日志可落盘）+ `MockCoordinator/MockRAG/MockAudit`（降级 Mock）。已**接入 Agent**：`run/run_stream` 结束自动记审计 + 存 RAG 轨迹（`agent.coordinator.enabled` 可关，默认开）。新增 27 项测试全绿。
@@ -810,7 +814,7 @@ registry.call("browser_close", {})
 # 10. 运行测试
 
 ```bash
-# 运行所有测试（共 494 个）
+# 运行所有测试（共 539 个）
 python -m pytest tests/ -v
 
 # 运行单个测试文件
@@ -874,11 +878,12 @@ python -m pytest tests/test_agent_read_web.py -v
 - **2026-09-07 本地模型乱码修复（UTF-8 增量解码）+「停止生成」打断（DeepSeek 式）**：问题一＝三个本地模型回复全变 `æ°è½æº` 乱码——根因（实测）Ollama 流式响应头不带 charset，requests `iter_content(decode_unicode=True)` 按 ISO-8859-1 误解码 UTF-8 中文（**不是模型乱码，是 Python 客户端解码层出错**）→ `chat_stream` 改按字节读流 + `codecs.getincrementaldecoder("utf-8")` 增量解码（天然容忍多字节跨网络块）；问题二＝本地小模型死循环/超长输出无法打断 → 三层：`run_stream(stop_check=...)` 回调（轮次/流式 chunk 间隙检查，保留已流出文本 + stop chunk 收尾）＋ Web `/task/<id>/stop` 端点（幂等）＋ 前端红色「⏹ 停止」按钮。新增 `tests/test_stream_stop_encoding.py` 11 例，**494 全绿**；端到端真机（e2e_stop_encoding_live.py）：1.5B/4B/7B 三模型中文全正常、打断终态 <0.5s、保留部分文本
 - **2026-09-08 四连发：本地图片直读 + 编程项目辅助 + KaTeX 公式渲染 + 深浅主题**：① **read_image 直接读本地图片**（给路径即分析，不必先打开屏幕靠截屏）——主模型有原生视觉（`llm.supports_vision: true`）直接看图，无视觉自动走 `core/vision_bridge` 转文字描述，文件缺失/两源都没配好时明确报错不瞎编；模型可见函数集 = **59 工具 + 5 白名单技能 + screen_inspect/read_image 视觉双通道（共 66）**；② **编程项目工作流**：新增 `search_in_files`（按内容搜关键词/正则、带行号原文）+ `edit_file`（原文片段精确替换，不整文件重写），SYSTEM_PROMPT 新守则第 11 条「先侦察、后动手」（list_directory→search_files→search_in_files→read_text_file→edit_file/write_text_file→run_command 实跑验证），小改不整重写、报错喂回搜索定位根因；③ **Web 前端 KaTeX 公式渲染**：`$...$`/`$$...$$` → 正常数学排版（先保护 LaTeX 片段防 marked 吞反斜杠 → marked 转 HTML → DOMPurify 消毒 → renderMathInElement），KaTeX/marked/DOMPurify **本地打包** `examples/static/vendor/`（离线可用，CDN 兜底回退）；④ **顶栏主题按钮**（会话数徽章左侧 ☀️/🌙）：深/浅色 CSS 变量切换 + localStorage 记忆 + 首帧防闪烁。全量 **512 全绿**；内嵌浏览器实测：主题切换持久化、行内+块级公式渲染（katex-display）、Markdown 加粗/代码正常、vendor 本地加载零 404
 
-## 第4周计划
-- 工具签名验证（可选）
-- 权限控制与白名单
-- 整体系统集成
-- 最终报告与PPT
+## 第4周计划（2026-09-10 全部完成 ✅）
+
+- ✅ **工具签名验证** — `get_tool_signature`（SHA256）工具来源/完整性校验
+- ✅ **权限控制与白名单** — `core/safety.py` 风险分级（read_only/low/medium/high）+ 授权档位（base/advanced/full）+ SecuritySandbox 危险指令拦截（rm/format/shutdown/dd/mkfs/fdisk）
+- ✅ **整体系统集成** — 第 5 组协调层（审计+RAG）接入 Agent + 设计书 6 个演示场景 Web 实测全通
+- ✅ **最终报告与PPT** — 调研报告 3988 字（PDF 宋体小四）+ 汇报 PPT（18 页）+ 检查点 1~4 全部文档齐全
 
 ---
 
@@ -896,7 +901,7 @@ python -m pytest tests/test_agent_read_web.py -v
 
 | 系统 | 状态 | 说明 |
 |------|------|------|
-| Windows 11 | ✅ 通过 | 494个测试全部通过，Demo正常运行 |
+| Windows 11 | ✅ 通过 | 539个测试全部通过，Demo正常运行 |
 | Ubuntu/Linux | ✅ 兼容 | 使用 `pathlib` / `shutil` 等跨平台库，无需修改 |
 | macOS | ✅ 预期兼容 | 内部测试未进行，理论兼容 |
 

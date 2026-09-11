@@ -184,8 +184,9 @@ class SecuritySandbox:
     本类负责"四层安全流程"编排，是第 5 组契约 check_json 的出口。
     """
 
-    # 危险指令/路径（对齐设计书 SecuritySandbox 示例）
-    DANGEROUS_ACTIONS = ("rm ", "format", "shutdown", "dd ", "mkfs", "fdisk")
+    # 危险指令/路径（对齐设计书 SecuritySandbox 示例；含 Windows/PowerShell 变体）
+    DANGEROUS_ACTIONS = ("rm ", "format", "shutdown", "dd ", "mkfs", "fdisk",
+                         "stop-computer", "restart-computer", "remove-item")
     PROTECTED_PATHS = ("/etc", "/usr", "/root", "/boot", "/etc/passwd", "/etc/shadow")
 
     def __init__(self, check_safe: Callable = None, audit: AuditLog = None):

@@ -240,3 +240,74 @@ class TestAgentRealLLMIntegration:
         # 修复前所有结果都贴第一个 id，这里断言按序一一配对
         assert [m["tool_call_id"] for m in tool_msgs] == ids
         assert [m["name"] for m in tool_msgs] == ["current_directory", "file_exists"]
+
+
+class TestSandboxGuard:
+    """SecuritySandbox 危险指令硬拦截接入 Agent 工具执行链的测试"""
+
+    def setup_method(self):
+        import tempfile
+        self._tmpdir = tempfile.mkdtemp(prefix="miniyu_test_sb_")
+        # confirm_high_risk=False（全自动档）：证明拦截来自沙箱硬拦截而非确认门
+        self.agent = Agent(
+            config={
+                "llm": {"provider": "deterministic"},
+                "agent": {"max_steps": 15, "confirm_high_risk": False, "history_window": 20},
+                "memory": {"storage_dir": self._tmpdir},
+            },
+            confirm_handler=None,
+        )
+        assert self.agent.coordinator is not None
+
+    def teardown_method(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _call(self, cmd: str) -> dict:
+        return self.agent._execute_one("run_command", {"cmd": cmd})
+
+    @pytest.mark.parametrize("cmd,keyword", [
+        ("rm -rf /", "危险指令"),
+        ("rm -rf ~/Desktop", "危险指令"),
+        ("shutdown -h now", "危险指令"),
+        ("format c:", "危险指令"),
+        ("dd if=/dev/zero of=/dev/sda", "危险指令"),
+        ("mkfs.ext4 /dev/sdb1", "危险指令"),
+        ("fdisk /dev/sda", "危险指令"),
+        ("Stop-Computer -Force", "危险指令"),
+        ("Restart-Computer", "危险指令"),
+        ("Remove-Item -Recurse -Force C:\\", "危险指令"),
+    ])
+    def test_dangerous_cmd_blocked(self, cmd, keyword):
+        result = self._call(cmd)
+        assert result["success"] is False
+        assert keyword in result["error"]
+
+    def test_normal_cmd_not_blocked(self):
+        result = self._call("echo miniyu")
+        # 全自动档无确认门 → 应真实执行成功，说明硬拦截只针对危险指令
+        assert result.get("success") is True, result
+
+    def test_no_coordinator_keeps_old_behavior(self):
+        import tempfile
+        tmpdir = tempfile.mkdtemp(prefix="miniyu_test_sb2_")
+        try:
+            agent = Agent(
+                config={
+                    "llm": {"provider": "deterministic"},
+                    "agent": {"max_steps": 15, "confirm_high_risk": False,
+                              "coordinator": {"enabled": False}},
+                    "memory": {"storage_dir": tmpdir},
+                },
+                confirm_handler=None,
+            )
+            assert agent.coordinator is None
+            result = agent._execute_one("run_command", {"cmd": "echo hi"})
+            assert result.get("success") is True, result
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_non_command_tool_untouched(self):
+        result = self.agent._execute_one("current_directory", {})
+        assert result.get("success") is True, result
