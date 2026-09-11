@@ -22,6 +22,7 @@ conversations/
 demo_downloads/
 test.txt
 doc_demo_result.json
+测试区/
 
 # ---- Python ----
 __pycache__/
