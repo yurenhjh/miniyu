@@ -35,23 +35,49 @@ import time
 from pathlib import Path
 
 
-# 向可交互元素注入索引标记，并返回压缩后的元素清单（Agent 的“眼睛”）
+# 向可交互元素注入索引标记并返回压缩元素清单（Agent 的"眼睛"）。
+# 目标选择含 contenteditable / role=textbox，并把 contenteditable 富文本框作为一等可输入目标。
+# 输出保留 index 兼容旧调用，同时提供 ref / role / name / editable 供模型优先用 ref 定位。
 _SNAPSHOT_JS = r"""
 (() => {
-  const sel = 'a, button, input, textarea, select, [role="button"], [role="link"], [onclick]';
+  const sel = 'a, button, input, textarea, select, [role="button"], [role="link"], ' +
+              '[role="textbox"], [role="searchbox"], [onclick], [contenteditable]';
   const els = Array.from(document.querySelectorAll(sel));
+  const stableId = (el) => {
+    if (el.id) return 'id:' + el.id;
+    const parts = [];
+    let n = el;
+    while (n && n.nodeType === 1) {
+      const p = n.parentElement;
+      if (!p) break;
+      const same = Array.from(p.children).filter((c) => c.tagName === n.tagName);
+      const pos = same.indexOf(n);
+      parts.unshift(n.tagName.toLowerCase() + ':' + pos);
+      n = p;
+    }
+    return (parts.join('/') || el.tagName.toLowerCase()).slice(0, 80);
+  };
+  const isEditable = (el) => el.isContentEditable === true ||
+    ['input', 'textarea', 'select'].indexOf(el.tagName.toLowerCase()) >= 0;
+  const nameOf = (el) => (el.innerText || el.value || el.getAttribute('aria-label') ||
+    el.getAttribute('title') || el.getAttribute('placeholder') ||
+    el.getAttribute('aria-placeholder') || el.getAttribute('data-placeholder') || '').toString().trim();
   const out = [];
   els.forEach((el, i) => {
     el.setAttribute('data-agentic-idx', String(i));
+    const sid = stableId(el).replace(/[^A-Za-z0-9_:\-]/g, '_');
+    const ref = 'e' + sid;
+    el.setAttribute('data-miniyu-ref', ref);
     const tag = el.tagName.toLowerCase();
-    const text = (el.innerText || el.value ||
-                  el.getAttribute('aria-label') || el.placeholder || '').toString().trim().slice(0, 60);
+    const rect = el.getBoundingClientRect();
     out.push({
+      ref: ref,
       index: i,
-      tag: tag,
       role: el.getAttribute('role') || tag,
-      type: el.getAttribute('type') || '',
-      text: text,
+      tag: tag,
+      name: nameOf(el).slice(0, 60),
+      editable: isEditable(el),
+      disabled: el.disabled === true,
     });
   });
   return out;
@@ -147,6 +173,7 @@ def _build_find_js(text, role, tag, only_selector, limit):
   };
   const textOf = (el) => (el.innerText || el.value || el.getAttribute('aria-label') ||
     el.getAttribute('title') || el.getAttribute('placeholder') ||
+    el.getAttribute('aria-placeholder') || el.getAttribute('data-placeholder') ||
     el.getAttribute('alt') || '').toString().trim();
   const roleOf = (el) => el.getAttribute('role') || el.tagName.toLowerCase();
   const matches = (el) => {
@@ -158,8 +185,8 @@ def _build_find_js(text, role, tag, only_selector, limit):
       const rl = wantRole.toLowerCase();
       roleOk = roleOf(el).toLowerCase() === rl;
       // 语义别名：可访问性树里 input/textarea 的 role 是 textbox/searchbox，
-      // button 的 role 是 button，a[href] 的 role 是 link——都放宽到标签判断。
-      if (!roleOk && (rl === 'textbox' || rl === 'searchbox')) roleOk = (tag === 'input' || tag === 'textarea');
+      // contenteditable 富文本框（如豆包聊天框）也视为 textbox；button/link/checkbox/radio 放宽到标签判断。
+      if (!roleOk && (rl === 'textbox' || rl === 'searchbox')) roleOk = (tag === 'input' || tag === 'textarea' || el.isContentEditable === true);
       if (!roleOk && rl === 'button') roleOk = (tag === 'button');
       if (!roleOk && rl === 'link') roleOk = el.matches('a[href]');
       if (!roleOk && rl === 'checkbox') roleOk = (tag === 'input' && (el.getAttribute('type') === 'checkbox'));
@@ -189,6 +216,9 @@ def _build_find_js(text, role, tag, only_selector, limit):
       tag: el.tagName.toLowerCase(),
       role: roleOf(el),
       name: textOf(el).slice(0, 80),
+      editable: el.isContentEditable === true ||
+        ['input', 'textarea', 'select'].indexOf(el.tagName.toLowerCase()) >= 0,
+      disabled: el.disabled === true,
       in_viewport: r.width > 2 && r.height > 2 &&
         r.bottom >= 0 && r.top <= window.innerHeight &&
         r.right >= 0 && r.left <= window.innerWidth,
@@ -488,15 +518,28 @@ class BrowserController:
         return self._type_legacy(text, index, selector)
 
     def _type_by_ref(self, text, ref):
-        """按 ref 实时定位并聚焦输入元素，再插入文本。"""
+        """按 ref 实时定位并聚焦输入元素，再插入文本。
+
+        对 readonly / disabled / contenteditable=false 的非可编辑目标拒绝输入（P2-1）。
+        """
         attr = f'[data-miniyu-ref="{ref}"]'
-        focused = self._evaluate(
+        state = self._evaluate(
             f"(() => {{ const e = document.querySelector({json.dumps(attr)}); "
-            f"if (!e) return false; e.scrollIntoView({{block: 'center'}}); e.focus(); return true; }})()")
-        if not focused:
-            raise SoMStaleError(f"输入目标 {ref} 已不在页面中，请重新 browser_inspect")
-        self._send("Input.insertText", {"text": text})
-        return {"typed": text, "ref": ref, "method": "som"}
+            f"if (!e) return {{ok: false, reason: 'gone'}}; "
+            f"if (e.disabled === true) return {{ok: false, reason: 'disabled'}}; "
+            f"if (e.readOnly === true) return {{ok: false, reason: 'readonly'}}; "
+            f"const isEdt = e.isContentEditable === true || "
+            f"['input','textarea','select'].indexOf(e.tagName.toLowerCase()) >= 0; "
+            f"if (!isEdt) return {{ok: false, reason: 'not_editable'}}; "
+            f"e.scrollIntoView({{block: 'center'}}); e.focus(); return {{ok: true}}; }})()")
+        # 兼容旧桩返回 bool（True=聚焦成功，False=目标缺失）
+        if state is True or (isinstance(state, dict) and state.get("ok")):
+            self._send("Input.insertText", {"text": text})
+            return {"typed": text, "ref": ref, "method": "som"}
+        reason = state.get("reason") if isinstance(state, dict) else "gone"
+        if reason in ("disabled", "readonly", "not_editable"):
+            raise LookupError(f"目标 {ref} 不可输入（{reason}），请重新 browser_inspect 选择可编辑元素")
+        raise SoMStaleError(f"输入目标 {ref} 已不在页面中，请重新 browser_inspect")
 
     def _type_legacy(self, text, index=None, selector=None):
         """旧式 DOM 定位输入。"""

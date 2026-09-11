@@ -1890,12 +1890,14 @@ class ToolRegistry:
             press_enter:   输入完成后是否立即按回车键（用于提交表单/发送消息，如豆包聊天框默认回车发送），默认 False。
 
         返回：
-            {"typed": text, "index"/"selector"/"ref", "sent": press_enter}
+            {"typed": text, "index"/"selector"/"ref",
+             "enter_pressed": press_enter}   # 仅表示"已按回车"，不代表消息已发出
+            （发送是否成功以 browser_read_text / 页面状态客观校验为准）
         """
         ret = self.browser.type_text(text, target=target, index=index, selector=selector)
         if press_enter:
             self.browser.press_enter()
-        return {**ret, "sent": press_enter}
+        return {**ret, "enter_pressed": press_enter}
 
     def browser_read_text(self, selector=None):
         """
