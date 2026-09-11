@@ -57,8 +57,33 @@ _SNAPSHOT_JS = r"""
     }
     return (parts.join('/') || el.tagName.toLowerCase()).slice(0, 80);
   };
-  const isEditable = (el) => el.isContentEditable === true ||
-    ['input', 'textarea', 'select'].indexOf(el.tagName.toLowerCase()) >= 0;
+  // 可输入判断必须与 _type_by_ref / find 完全一致：只有原生可输入控件或真正
+  // contenteditable 才算 editable；role=textbox 的 wrapper 或隐藏控件不算。
+  const _typingInput = (el) => {
+    if (el.tagName.toLowerCase() !== 'input') return false;
+    return !['hidden', 'file', 'submit', 'reset', 'button', 'checkbox', 'radio']
+      .includes((el.getAttribute('type') || '').toLowerCase());
+  };
+  const isEditable = (el) => {
+    const t = el.tagName.toLowerCase();
+    if (t === 'input') return _typingInput(el);
+    return t === 'textarea' || t === 'select' || el.isContentEditable === true;
+  };
+  const inputKind = (el) => {
+    const t = el.tagName.toLowerCase();
+    const ty = (el.getAttribute('type') || '').toLowerCase();
+    if (t === 'input') return _typingInput(el) ? 'native-input' : 'hidden-input';
+    if (t === 'textarea') return 'textarea';
+    if (t === 'select') return 'select';
+    if (el.isContentEditable === true) return 'contenteditable';
+    const r = (el.getAttribute('role') || '').toLowerCase();
+    return (r === 'textbox' || r === 'searchbox') ? 'semantic-textbox' : 'other';
+  };
+  const visibleOf = (el) => {
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 1 && r.height > 1;
+  };
   const nameOf = (el) => (el.innerText || el.value || el.getAttribute('aria-label') ||
     el.getAttribute('title') || el.getAttribute('placeholder') ||
     el.getAttribute('aria-placeholder') || el.getAttribute('data-placeholder') || '').toString().trim();
@@ -77,6 +102,8 @@ _SNAPSHOT_JS = r"""
       tag: tag,
       name: nameOf(el).slice(0, 60),
       editable: isEditable(el),
+      input_kind: inputKind(el),
+      visible: visibleOf(el),
       disabled: el.disabled === true,
     });
   });
@@ -171,6 +198,32 @@ def _build_find_js(text, role, tag, only_selector, limit):
     }
     return (parts.join('/') || el.tagName.toLowerCase()).slice(0, 80);
   };
+  // 与 _SNAPSHOT_JS / _type_by_ref 同一套可输入判断：非输入型 input（hidden/file/checkbox…）与
+  // 仅 role=textbox 的 wrapper 都不算可编辑。role 别名也不再把这类 input 当 textbox 候选。
+  const _typingInput = (el) => {
+    if (el.tagName.toLowerCase() !== 'input') return false;
+    return !['hidden', 'file', 'submit', 'reset', 'button', 'checkbox', 'radio']
+      .includes((el.getAttribute('type') || '').toLowerCase());
+  };
+  const isEditable = (el) => {
+    const t = el.tagName.toLowerCase();
+    if (t === 'input') return _typingInput(el);
+    return t === 'textarea' || t === 'select' || el.isContentEditable === true;
+  };
+  const inputKind = (el) => {
+    const t = el.tagName.toLowerCase();
+    if (t === 'input') return _typingInput(el) ? 'native-input' : 'hidden-input';
+    if (t === 'textarea') return 'textarea';
+    if (t === 'select') return 'select';
+    if (el.isContentEditable === true) return 'contenteditable';
+    const r = (el.getAttribute('role') || '').toLowerCase();
+    return (r === 'textbox' || r === 'searchbox') ? 'semantic-textbox' : 'other';
+  };
+  const visibleOf = (el) => {
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 1 && r.height > 1;
+  };
   const textOf = (el) => (el.innerText || el.value || el.getAttribute('aria-label') ||
     el.getAttribute('title') || el.getAttribute('placeholder') ||
     el.getAttribute('aria-placeholder') || el.getAttribute('data-placeholder') ||
@@ -186,7 +239,11 @@ def _build_find_js(text, role, tag, only_selector, limit):
       roleOk = roleOf(el).toLowerCase() === rl;
       // 语义别名：可访问性树里 input/textarea 的 role 是 textbox/searchbox，
       // contenteditable 富文本框（如豆包聊天框）也视为 textbox；button/link/checkbox/radio 放宽到标签判断。
-      if (!roleOk && (rl === 'textbox' || rl === 'searchbox')) roleOk = (tag === 'input' || tag === 'textarea' || el.isContentEditable === true);
+      // 非输入型 input（type=hidden/file/…) 不视为 textbox 候选，避免把隐藏上传框当成聊天输入框。
+      if (!roleOk && (rl === 'textbox' || rl === 'searchbox'))
+        roleOk = (tag === 'textarea') ||
+                 (tag === 'input' && _typingInput(el)) ||
+                 el.isContentEditable === true;
       if (!roleOk && rl === 'button') roleOk = (tag === 'button');
       if (!roleOk && rl === 'link') roleOk = el.matches('a[href]');
       if (!roleOk && rl === 'checkbox') roleOk = (tag === 'input' && (el.getAttribute('type') === 'checkbox'));
@@ -216,8 +273,9 @@ def _build_find_js(text, role, tag, only_selector, limit):
       tag: el.tagName.toLowerCase(),
       role: roleOf(el),
       name: textOf(el).slice(0, 80),
-      editable: el.isContentEditable === true ||
-        ['input', 'textarea', 'select'].indexOf(el.tagName.toLowerCase()) >= 0,
+      editable: isEditable(el),
+      input_kind: inputKind(el),
+      visible: visibleOf(el),
       disabled: el.disabled === true,
       in_viewport: r.width > 2 && r.height > 2 &&
         r.bottom >= 0 && r.top <= window.innerHeight &&
@@ -253,6 +311,37 @@ def _target_key(t):
     if t.extra.get("tabindex") is not None:
         return 5
     return 9
+
+
+def _target_rank(el):
+    """browser_find 候选排序分值（P2-2，值越大越优先）。
+
+    目标：可见 + 可输入 + in_viewport 优先于隐藏 / 不可编辑；隐藏 input 与
+    不可编辑的 wrapper 排最末。与 _type_by_ref 的可输入判断保持一致。
+    """
+    kind = (el.get("input_kind") or el.get("tag") or "").lstrip().lower()
+    score = 0
+    if kind in ("native-input", "textarea"):
+        score += 100
+    elif kind == "contenteditable":
+        score += 80
+    elif kind == "select":
+        score += 70
+    elif kind == "semantic-textbox":
+        score += 40
+    elif kind == "hidden-input":
+        score -= 120
+    if el.get("in_viewport"):
+        score += 25
+    if el.get("visible"):
+        score += 30
+    else:
+        score -= 60
+    if el.get("disabled"):
+        score -= 120
+    if not el.get("editable"):
+        score -= 80          # 不可编辑目标显著降权
+    return score
 
 
 class BrowserController:
@@ -441,11 +530,30 @@ class BrowserController:
         max_results= 最多返回条数（默认 20，上限 100）
 
         返回的每条都带稳定 ref（已写入 data-miniyu-ref，可直接给 click/type 用），
-        以及 in_viewport 标记——大页面 "先 find 缩小范围、再按 ref 操作"。
+        以及 in_viewport / visible / input_kind 标记——大页面 "先 find 缩小范围、
+        再按 ref 操作"。
+
+        P2-2 在工具层做候选排序与过滤，避免把隐藏 input / 不可编辑 wrapper 排在
+        可见可输入目标之前：
+          - 排序：可见 + 可输入 + in_viewport 优先于隐藏 / 不可编辑；
+          - 过滤：查询 textbox/searchbox 且存在可编辑候选时，剔除 "hidden-input"
+            与不可编辑的 "semantic-textbox" wrapper，减少模型误判。
         """
         js = _build_find_js(text, role, tag, selector, max_results)
         items = self._evaluate(js)
-        return items if isinstance(items, list) else []
+        if not isinstance(items, list):
+            return []
+        items = [dict(x) for x in items]
+        items.sort(key=_target_rank, reverse=True)   # 稳定降序：高优先级在前
+        role_q = (role or "").strip().lower()
+        editable_any = any(x.get("editable") for x in items)
+        if role_q in ("textbox", "searchbox") and editable_any:
+            items = [
+                x for x in items
+                if not (x.get("input_kind") == "hidden-input")
+                and not (x.get("input_kind") == "semantic-textbox" and not x.get("editable"))
+            ]
+        return items[:max(1, min(int(max_results or 20), 100))]
 
     def click(self, target=None, index=None, selector=None, x=None, y=None):
         """点击元素。支持统一 target（ref / som:N / css 选择器），也为旧调用保留
@@ -520,7 +628,10 @@ class BrowserController:
     def _type_by_ref(self, text, ref):
         """按 ref 实时定位并聚焦输入元素，再插入文本。
 
-        对 readonly / disabled / contenteditable=false 的非可编辑目标拒绝输入（P2-1）。
+        可输入判断与 _SNAPSHOT_JS / find 完全一致：只有原生可输入控件或真正
+        contenteditable 才允许输入；readonly/disabled/隐藏/非输入型 input/仅
+        role=textbox 的 wrapper 一律拒绝。失败时给出 browser_find/snapshot
+        恢复建议（P2-2），不引导升级到 SoM。
         """
         attr = f'[data-miniyu-ref="{ref}"]'
         state = self._evaluate(
@@ -528,8 +639,10 @@ class BrowserController:
             f"if (!e) return {{ok: false, reason: 'gone'}}; "
             f"if (e.disabled === true) return {{ok: false, reason: 'disabled'}}; "
             f"if (e.readOnly === true) return {{ok: false, reason: 'readonly'}}; "
-            f"const isEdt = e.isContentEditable === true || "
-            f"['input','textarea','select'].indexOf(e.tagName.toLowerCase()) >= 0; "
+            f"const t = e.tagName.toLowerCase(); "
+            f"const isTypingInput = t !== 'input' || !['hidden','file','submit','reset','button','checkbox','radio']"
+            f".includes((e.getAttribute('type')||'').toLowerCase()); "
+            f"const isEdt = e.isContentEditable === true || t === 'textarea' || t === 'select' || (t === 'input' && isTypingInput); "
             f"if (!isEdt) return {{ok: false, reason: 'not_editable'}}; "
             f"e.scrollIntoView({{block: 'center'}}); e.focus(); return {{ok: true}}; }})()")
         # 兼容旧桩返回 bool（True=聚焦成功，False=目标缺失）
@@ -538,8 +651,12 @@ class BrowserController:
             return {"typed": text, "ref": ref, "method": "som"}
         reason = state.get("reason") if isinstance(state, dict) else "gone"
         if reason in ("disabled", "readonly", "not_editable"):
-            raise LookupError(f"目标 {ref} 不可输入（{reason}），请重新 browser_inspect 选择可编辑元素")
-        raise SoMStaleError(f"输入目标 {ref} 已不在页面中，请重新 browser_inspect")
+            raise LookupError(
+                f"目标 {ref} 不可输入（{reason}）。请重新 browser_find / browser_snapshot "
+                f"选择原生 input、textarea 或真正可编辑的 contenteditable 元素，不要 browser_inspect。")
+        raise SoMStaleError(
+            f"输入目标 {ref} 已失效（stale_target）。请重新 browser_find / browser_snapshot "
+            f"获取最新结构化 ref，不要直接 browser_inspect。")
 
     def _type_legacy(self, text, index=None, selector=None):
         """旧式 DOM 定位输入。"""
