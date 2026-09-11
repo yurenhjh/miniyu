@@ -346,7 +346,7 @@ group4_tools_os_skills/
 │   ├── mock_tools.py              # Mock版工具注册表（59个工具）
 │   └── mock_skills.py             # Mock版技能库（26个技能）
 │
-├── tests/                         # 单元测试（共 512 个，全部通过）
+├── tests/                         # 单元测试（共 552 个，全部通过）
 │   ├── __init__.py
 │   ├── test_tool_registry.py      # ToolRegistry测试（92个：全部工具+新工具+异常+别名+错误码）
 │   ├── test_skills.py             # SkillLibrary测试（43个：基础+扩展+搜索+Agent）
@@ -378,11 +378,18 @@ group4_tools_os_skills/
 │   ├── browser_doubao_demo.py     # 免登录豆包游客对话：真实鼠标聚焦+insertText+回车（无需登录可复跑）
 │   └── browser_deepseek_demo.py   # CDP 驱动 DeepSeek 网页对话：发消息、读回复、截图（需登录）
 │
-├── docs/                          # 文档
-│   ├── 接口文档.docx               # 接口文档
-│   ├── 设计文档.docx               # 设计文档
-│   ├── test_report.md             # 单元测试报告
-│   ├── mcp_research.md            # MCP协议调研报告
+├── docs/                          # 文档（第 4 组交付，检查点 1~4）
+│   ├── 第4组接口文档.md            # 接口文档（检查点 1）
+│   ├── 第4组调研报告.md + .pdf     # 调研报告 ≥3000 字（检查点 1/4）
+│   ├── 第4组设计文档.md            # 设计文档（检查点 2）
+│   ├── 第4组单元测试报告.md        # 单元测试报告（检查点 2）
+│   ├── 第4组联调与集成报告.md      # 联调测试报告（检查点 3）
+│   ├── 第4组Web演示记录.md         # 6 演示场景端到端实测
+│   ├── 第4组安全机制验证记录.md     # 危险指令硬拦截浏览器实测
+│   ├── 第4组汇报PPT.pptx          # 汇报 PPT（检查点 4，18+ 页）
+│   ├── 第4组交付说明.md            # 提交清单与打包
+│   ├── evidence/                 # 真机证据（含 security_test_* 安全验证截图）
+│   ├── scripts/                  # 转换脚本（md_to_pdf.py 等）
 │   └── adr/
 │       ├── 0001-sort_directory-tool.md  # 排序工具决策记录
 │       ├── 0002-index-files-tool.md     # 索引工具决策记录
@@ -843,7 +850,7 @@ python -m pytest tests/test_agent_read_web.py -v
 
 # 11. 与MCP协议的对应关系
 
-本项目参考了 MCP（Model Context Protocol）协议设计接口。详见 [MCP调研报告](docs/mcp_research.md)。
+本项目参考了 MCP（Model Context Protocol）协议设计接口。详见 [接口文档](docs/第4组接口文档.md)（MCP tools/list、tools/call 对齐）与 [调研报告](docs/第4组调研报告.md)（MCP 协议深入调研章节）。
 
 | MCP概念 | 本组实现 |
 |---------|---------|
@@ -901,7 +908,7 @@ python -m pytest tests/test_agent_read_web.py -v
 
 | 系统 | 状态 | 说明 |
 |------|------|------|
-| Windows 11 | ✅ 通过 | 539个测试全部通过，Demo正常运行 |
+| Windows 11 | ✅ 通过 | 552个测试全部通过，Demo正常运行 |
 | Ubuntu/Linux | ✅ 兼容 | 使用 `pathlib` / `shutil` 等跨平台库，无需修改 |
 | macOS | ✅ 预期兼容 | 内部测试未进行，理论兼容 |
 
