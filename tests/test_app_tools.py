@@ -116,6 +116,35 @@ class TestBrowserTools(unittest.TestCase):
         self.assertTrue(r["result"]["clicked"])
         self.assertEqual(r["result"]["index"], 1)
 
+    def test_browser_inspect_registered_and_shape(self):
+        r = self.registry.call("browser_inspect", {})
+        self.assertTrue(r["success"])
+        res = r["result"]
+        self.assertIn("image_path", res)
+        self.assertIn("elements", res)
+        self.assertTrue(res["elements"])
+        self.assertIn("num", res["elements"][0])
+        self.assertIn("ref", res["elements"][0])
+
+    def test_browser_click_by_som_target(self):
+        r = self.registry.call("browser_click", {"target": "som:2"})
+        self.assertTrue(r["success"])
+        self.assertEqual(r["result"]["method"], "som")
+        self.assertEqual(r["result"]["num"], 2)
+        self.assertEqual(r["result"]["ref"], "e101")
+
+    def test_browser_click_by_ref_target(self):
+        r = self.registry.call("browser_click", {"target": "eid:searchbtn"})
+        self.assertTrue(r["success"])
+        self.assertEqual(r["result"]["method"], "ref")
+
+    def test_browser_type_by_som_target(self):
+        r = self.registry.call("browser_type",
+                               {"text": "你好", "target": "som:1"})
+        self.assertTrue(r["success"])
+        self.assertEqual(r["result"]["typed"], "你好")
+        self.assertEqual(r["result"]["target"], "som:1")
+
     def test_browser_type_chinese(self):
         r = self.registry.call("browser_type", {"text": "你好", "index": 0})
         self.assertTrue(r["success"])

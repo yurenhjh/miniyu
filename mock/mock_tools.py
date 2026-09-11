@@ -90,6 +90,8 @@ class MockToolRegistry:
         self.register("browser_read_text", self._browser_read_text)
         self.register("browser_screenshot", self._browser_screenshot)
         self.register("browser_wait", self._browser_wait)
+        self.register("browser_inspect", self._browser_inspect)
+        self.register("browser_find", self._browser_find)
 
         # 系统管理（进程 / 网络 / 环境变量）
         self.register("list_processes", self._list_processes)
@@ -401,14 +403,58 @@ class MockToolRegistry:
              "type": "", "text": "结果链接"},
         ]
 
-    def _browser_click(self, index=None, selector=None):
+    def _browser_click(self, target=None, index=None, selector=None, x=None, y=None):
+        if x is not None and y is not None:
+            return {"clicked": True, "x": x, "y": y}
+        if target is not None:
+            if str(target).startswith("som:"):
+                num = int(str(target).split(":", 1)[1])
+                return {"clicked": True, "target": target, "num": num,
+                        "ref": "e101", "method": "som"}
+            return {"clicked": True, "target": target, "method": "ref"}
         return {"clicked": True, "index": index, "selector": selector}
 
-    def _browser_type(self, text, index=None, selector=None):
-        return {"typed": text, "index": index, "selector": selector}
+    def _browser_type(self, text, target=None, index=None, selector=None, press_enter=False):
+        if target is not None:
+            return {"typed": text, "target": target, "sent": press_enter}
+        return {"typed": text, "index": index, "selector": selector, "sent": press_enter}
+
+    def _browser_inspect(self, output=None, max_elements=40, question=""):
+        return {
+            "image_path": output or "[MOCK] /tmp/mock_browser_inspect.png",
+            "url": "https://example.com",
+            "title": "Example",
+            "dpr": 1.0,
+            "elements": [
+                {"num": 1, "ref": "eid:searchbox", "role": "textbox", "name": "搜索",
+                 "tag": "input", "bbox_css": [0, 0, 200, 40], "center_css": [100, 20]},
+                {"num": 2, "ref": "eid:searchbtn", "role": "button", "name": "搜索",
+                 "tag": "button", "bbox_css": [200, 0, 80, 40], "center_css": [240, 20]},
+                {"num": 3, "ref": "eid:login", "role": "link", "name": "登录",
+                 "tag": "a", "bbox_css": [0, 50, 40, 20], "center_css": [20, 60]},
+            ],
+        }
 
     def _browser_read_text(self, selector=None):
         return "[MOCK] 页面正文文本内容"
+
+    def _browser_find(self, text=None, role=None, tag=None, selector=None, max_results=20):
+        hits = []
+        if not text:
+            return []
+        first = (text or "").strip()
+        tree = [
+            ("button", "button", first),
+            ("a", "link", first),
+            ("input", "textbox", first),
+        ]
+        for t, r, n in tree:
+            if t == tag or (role and role == r) or (not tag and not role):
+                hits.append({"ref": f"eid:fnd_{len(hits)}", "tag": t, "role": r,
+                             "name": n, "in_viewport": True})
+            if len(hits) >= max_results:
+                break
+        return hits[:max_results]
 
     def _browser_screenshot(self, output=None):
         return output or "[MOCK] /tmp/mock_browser.png"

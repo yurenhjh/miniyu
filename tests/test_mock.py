@@ -15,9 +15,9 @@ class TestMockToolRegistry(unittest.TestCase):
         self.registry = MockToolRegistry()
 
     def test_list_tools_count(self):
-        """Mock工具数量应与正式版一致（59个）"""
+        """Mock工具数量应与正式版一致（61个）"""
         tools = self.registry.list_tools()
-        self.assertEqual(len(tools), 59)
+        self.assertEqual(len(tools), 61)
 
     def test_list_tools_contains_core_tools(self):
         """Mock应包含核心工具"""

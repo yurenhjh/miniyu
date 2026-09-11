@@ -1,6 +1,6 @@
 # Group4 - miniyu 桌面 AI 助手（Tool Registry + OS Skills + Agent 编排层）
 
-## 完整桌面 AI 助手（LLM 驱动，function-calling 调用 59 个系统工具 + 26 个技能）
+## 完整桌面 AI 助手（LLM 驱动，function-calling 调用 61 个系统工具 + 26 个技能）
 
 ---
 
@@ -61,6 +61,10 @@ bash run_miniyu_web.sh           # Windows：run_miniyu_web.bat
 > - **安全机制实测 + 危险指令硬拦截接入 Agent 执行链（任意授权档位均生效）**：Web 界面（真实 LLM qwen3.7-flash，最低授权 base 档）实测危险操作——`rm -rf /`、`format` 被直接拒绝；`shutdown` 修复前只弹确认窗，**修复后直接拒绝**（`core/agent.py` `_sandbox_guard` 在确认门前无条件执行：run_command 等带 cmd/command 参数的工具命中 `DANGEROUS_ACTIONS` 直接返回拒绝并审计，杜绝"确认弹窗被误点"的社交工程绕过；拦截**不看授权档位 base/advanced/full**，即使 `coordinator.enabled=false` 也会构造独立沙箱兜底，保证 shutdown/rm -rf/format 等破坏性指令在任何情况下都不会被执行；`DANGEROUS_ACTIONS` 覆盖 Stop-Computer/Restart-Computer/Remove-Item/del /f /s/rd /s /q/diskpart/reg delete 等 Windows 变体）。新增 `tests/test_agent.py::TestSandboxGuard` 19 例（含 coordinator 关闭回归），**558 全绿**；实测截图入 `docs/evidence/security_test_*.png`，记录见 `docs/第4组安全机制验证记录.md`。
 > - **README 收尾更新**：第 4 周计划 4 项全部标记完成 ✅（工具签名/权限控制/整体集成/最终报告与PPT）；全量测试 **558** 更新（10. 运行测试 / 13. 技术特点 / 14. 跨平台兼容）。
 
+> **近期变更（2026-09-11·浏览器视觉定位 DOM-SoM）**
+> - **浏览器从"索引盲点"升级为"DOM-SoM-坐标混合定位"**（对齐 `docs/miniyu 浏览器与桌面视觉定位增强方案（DOM-SoM-坐标混合架构）.md`）：新增统一目标模型 `core/uitarget.py`（UITarget：ref / 视觉编号 / bbox_css / center_css）与两块定位能力——**`browser_inspect`**（SoM：给页面截"交互元素带编号覆盖层"图，Agent 看编号用 `browser_click(target='som:N')`；编号只是视觉标签，真正执行落到当前 DOM 的稳定 ref，单一 InspectSession + URL/DOM 指纹做失效判定，页面变化旧编号自动抛错逼重新 inspect）和 **`browser_find`**（按目标文字/名称/角色局部搜索，大页面不取整页结构，返回可直接点击的稳定 ref）。`browser_click`/`browser_type` 统一 `target` 参数兼容 ref / `som:N` / CSS 选择器三套；`browser_snapshot` 也返回 ref。坐标一律存 **CSS 视口像素**、地址设备像素与截图 DPR 换算（修掉双重缩放），并新增客观 **Action Verification**（`url_changed / page_changed`，不做 AI 语义判断）。**工具 59→61、全量测试 583 全绿**（新增 `test_uitarget.py`、`test_browser_som.py`）。真实 Chrome 端到端已自证（`examples/browser_som_dom_demo.py`：必应 find→ref 输入中文→inspect→som 点击全链路）。
+> - **P1 Token/观测成本控制 + 浏览器会话隔离 + 端到端降耗 46%**（2026-09-11，test 590）：① **Observation 生命周期**——`_MAX_HISTORY_IMAGES=2` 历史图片裁剪 + 成功的结构化动作（snapshot/find/type/wait/read）不再自动截图（仅 launch/navigate、click 引起页面/URL 变化、失败诊断才截），System Prompt 第 14 条"结构化读文字"；② **过程可观测**——`run_log_*.jsonl`（时间戳记录的 llm 想法/action/token 三类事件）+ `reasoning_tokens` 入库，账单口径对账一致；③ **会话隔离**——浏览器任务期间拦截 `click_at/send_text/send_hotkey/activate_window`（只读放行），杜绝"网页任务逃逸桌面工具"；`browser_refresh`/`browser_bring_to_front` 窗口前置 + 持久登录档案（独立 user_data_dir，登录态保留）；④ **跨平台**——Linux 整进程组关闭浏览器、补浏览器路径。**豆包 E2E 账单 274,606→147,362（−46%）、图片峰 6→2、末轮 prompt 29,284→19,664，run_log cum=147,362 与官网账单完全一致**（可作为 Benchmark 基线 147,362）；全量测试 **590 全绿**（新增 `tests/test_agent_obs.py` 7 例）。
+
 > **近期变更（2026-09-09）**
 > - **第 4 组提交文档补齐（docs/）**：对照任务设计书评分/验收，新增 5 份可提交文档——`docs/第4组调研报告.md`、`docs/第4组设计文档.md`、`docs/第4组单元测试报告.md`、`docs/第4组联调与集成报告.md`、`docs/第4组交付说明.md`（含提交/打包清单与一键复现）。功能面核对第 4 组要求**无缺失且超额**（59 工具 + 26 技能 + 调用统计 + 工具签名 + 59 Mock + 558 测试全绿），本轮无需改代码。
 > - **第 5 组职责补齐（整体设计完整性）**：对照设计书「系统协调+安全+RAG」核查，安全层早已完整，**补齐 4 项缺失**——新增 `core/coordinator.py`：`SystemCoordinator`（模块编排 1→5→2→3→4 数据流）+ `SecuritySandbox`（四层安全：权限/沙箱/签名/隐私）+ `RAGKnowledgeBase`（轻量向量检索执行轨迹，零依赖）+ `AuditLog`（审计日志可落盘）+ `MockCoordinator/MockRAG/MockAudit`（降级 Mock）。已**接入 Agent**：`run/run_stream` 结束自动记审计 + 存 RAG 轨迹（`agent.coordinator.enabled` 可关，默认开）。新增 27 项测试全绿。
@@ -86,7 +90,7 @@ bash run_miniyu_web.sh           # Windows：run_miniyu_web.bat
 
 # 2. 项目简介
 
-本项目为课程设计 **第4组：miniyu 桌面 AI 助手**（LLM 驱动，function-calling 调用 59 个系统工具 + 26 个技能），底层以"工具注册 + OS Skills（Tool Registry + OS Skills）"作为统一系统能力接口。
+本项目为课程设计 **第4组：miniyu 桌面 AI 助手**（LLM 驱动，function-calling 调用 61 个系统工具 + 26 个技能），底层以"工具注册 + OS Skills（Tool Registry + OS Skills）"作为统一系统能力接口。
 
 本模块负责为 Agentic OS 提供统一的系统能力接口，包括：
 
@@ -176,7 +180,7 @@ Skill（高级任务能力）
 - 不依赖真实文件系统
 - 支持跨组并行开发
 - 保证接口稳定一致
-- 覆盖全部59个工具和24个技能
+- 覆盖全部61个工具和24个技能
 
 ## 3.5 工具描述 Schema（ToolSpec）
 
@@ -226,6 +230,10 @@ Skill（高级任务能力）
 | 设计要点 | 说明 |
 |---------|------|
 | 快照索引定位 | `browser_snapshot()` 给可交互元素打 `data-agentic-idx` 标记，之后 `click/type` 按 index 操作（等价于 Playwright MCP 的 `ref`、browserclaw 的 ref） |
+| 稳定 ref 定位 | `browser_snapshot` / `browser_find` 返回**稳定 ref**（元素 id 或结构路径签名生成，DOM 重排不漂移），`browser_click(target=ref)` 直接落点，更抗 SPA 重渲染 |
+| SoM 视觉定位 | `browser_inspect` 截"交互元素带编号覆盖层"图，`browser_click(target='som:N')` 按编号真实鼠标点击；编号只当视觉标签、真正执行落到当前 DOM 的 ref，单一 InspectSession + DOM 指纹做失效判定，页面变化旧编号自动抛错 |
+| 坐标体系 | 元素坐标统一存 CSS 视口像素，截图标注与点击按 DPR 换算设备像素（消除双重缩放） |
+| 客观验证 | 动作后返回 `url_changed / page_changed`（URL+DOM 指纹），客观判断是否生效，不做 AI 语义判断 |
 | 中文安全输入 | 走 CDP `Input.insertText` 直接向焦点元素插文本，无需剪贴板 |
 | 事件驱动等待 | `wait_for()` 轮询元素/文本出现，替代盲目 sleep |
 | 跨平台 | 浏览器屏蔽 OS 差异，无需 Windows/Linux 双实现 |
@@ -258,7 +266,7 @@ miniyu 是第4组独立实现的 AI 桌面助手，通过 LLM 驱动的 Agent �
     │   └── FailoverClient（自动降级：主 API → 本地 Ollama → 确定性脑；
     │       支持运行时热切换模型 + force_local 手动本地模式）
     ↓
- OSServiceAPI（59 个工具 + 26 个技能）
+ OSServiceAPI（61 个工具 + 26 个技能）
     ↓
  实际执行
 ```
@@ -326,11 +334,11 @@ group4_tools_os_skills/
 │
 ├── core/                          # 核心模块
 │   ├── __init__.py
-│   ├── tool_registry.py           # 工具注册表（正式版，59 工具，含 click_at + 系统管理 + 编程辅助）
+│   ├── tool_registry.py           # 工具注册表（正式版，63 工具，含 click_at + 系统管理 + 编程辅助 + 浏览器视觉定位）
 	│   ├── tool_schema.py           # 工具描述 Schema（ToolSpec，多格式转换）
 	│   ├── skill_library.py           # OS Skills 技能库（26 技能，含 app_*/browser_*/QQ读 read_qq_chat/邮件 send_email）
 	│   ├── app_controller.py          # 应用操作控制器（Windows/Linux；click_at / read_clipboard / get_window_rect）
-	│   ├── browser_controller.py      # 浏览器结构化控制（CDP：snapshot 索引 + insertText 中文输入）
+	│   ├── browser_controller.py      # 浏览器结构化控制（CDP：snapshot/find+稳定 ref + SoM 视觉定位 + insertText 中文输入）
 	│   ├── safety.py                  # 安全分级元数据 + 确认门（call_safely / run_skill_safely）
 	│   ├── classifier.py              # 任务分类器（auto / confirm / warn）
 	│   ├── executor.py                # 多步执行引擎（Plan / ExecutionEngine，支持 $ref 取上步结果）
@@ -343,10 +351,10 @@ group4_tools_os_skills/
 │
 ├── mock/                          # Mock模块（跨组联调用）
 │   ├── __init__.py                # Mock统一入口 + MockOSServiceAPI
-│   ├── mock_tools.py              # Mock版工具注册表（59个工具）
+│   ├── mock_tools.py              # Mock版工具注册表（61个工具）
 │   └── mock_skills.py             # Mock版技能库（26个技能）
 │
-├── tests/                         # 单元测试（共 558 个，全部通过）
+├──  tests/                         # 单元测试（共 590 个，全部通过）
 │   ├── __init__.py
 │   ├── test_tool_registry.py      # ToolRegistry测试（92个：全部工具+新工具+异常+别名+错误码）
 │   ├── test_skills.py             # SkillLibrary测试（43个：基础+扩展+搜索+Agent）
@@ -417,7 +425,7 @@ group4_tools_os_skills/
 
 ---
 
-# 5. 已实现工具列表（共59个）
+# 5. 已实现工具列表（共61个）
 
 | 工具名称 | 功能 | 类别 |
 |----------|------|------|
@@ -466,12 +474,14 @@ group4_tools_os_skills/
 | browser_launch | 启动并连接浏览器（Chrome/Edge/Chromium） | 浏览器控制 |
 | browser_close | 关闭浏览器连接 | 浏览器控制 |
 | browser_navigate | 导航到指定 URL | 浏览器控制 |
-| browser_snapshot | 提取可交互元素索引清单 | 浏览器控制 |
-| browser_click | 按快照索引/选择器点击元素 | 浏览器控制 |
-| browser_type | 向元素输入文本（中文安全） | 浏览器控制 |
+| browser_snapshot | 提取可交互元素索引清单（含稳定 ref） | 浏览器控制 |
+| browser_click | 点击元素（统一 target=ref / som:N / 选择器） | 浏览器控制 |
+| browser_type | 向元素输入文本（中文安全，支持 target=ref / som:N） | 浏览器控制 |
 | browser_read_text | 读取页面/指定元素文本 | 浏览器控制 |
 | browser_screenshot | 对当前页面截图 | 浏览器控制 |
 | browser_wait | 等待元素/文本出现 | 浏览器控制 |
+| browser_inspect | 截"交互元素带编号覆盖层"图（SoM 视觉定位） | 浏览器控制 |
+| browser_find | 按目标文字/名称/角色局部搜索元素并返回稳定 ref | 浏览器控制 |
 | list_processes | 列出当前运行的进程 | 系统管理 |
 | get_process_info | 获取指定进程的详细信息 | 系统管理 |
 | kill_process | 强制终止进程 | 系统管理 |
@@ -821,7 +831,7 @@ registry.call("browser_close", {})
 # 10. 运行测试
 
 ```bash
-# 运行所有测试（共 558 个）
+# 运行所有测试（共 583 个）
 python -m pytest tests/ -v
 
 # 运行单个测试文件
@@ -908,7 +918,7 @@ python -m pytest tests/test_agent_read_web.py -v
 
 | 系统 | 状态 | 说明 |
 |------|------|------|
-| Windows 11 | ✅ 通过 | 558个测试全部通过，Demo正常运行 |
+| Windows 11 | ✅ 通过 | 583个测试全部通过，Demo正常运行 |
 | Ubuntu/Linux | ✅ 兼容 | 使用 `pathlib` / `shutil` 等跨平台库，无需修改 |
 | macOS | ✅ 预期兼容 | 内部测试未进行，理论兼容 |
 

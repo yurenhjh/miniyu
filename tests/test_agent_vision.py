@@ -262,14 +262,14 @@ class TestScreenInspect(unittest.TestCase):
 
 
 class TestAgentVisionToolset(unittest.TestCase):
-    """模型可见函数全集 = 59 工具 + 5 白名单技能 + screen_inspect + read_image（共 66）"""
+    """模型可见函数全集 = 61 工具 + 5 白名单技能 + screen_inspect + read_image（共 68）"""
 
     def test_agent_toolset_has_screen_inspect(self):
         with tempfile.TemporaryDirectory(prefix="mini_st_") as storage:
             agent = Agent(config=_cfg(storage))
             tools = agent._agent_openai_tools()
             names = [t["function"]["name"] for t in tools]
-            self.assertEqual(len(tools), 66)
+            self.assertEqual(len(tools), 71)   # registry63 + 技能5 + screen_inspect/read_image/token_usage
             self.assertIn("screen_inspect", names)
             self.assertIn("read_image", names)
             self.assertIn("app_send_message", names)

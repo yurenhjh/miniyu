@@ -27,6 +27,14 @@ from core.tool_schema import (
 )
 
 
+# 浏览器会话内被硬门控的桌面全局工具（会向"错误的窗口"注入操作）。
+# 实时截图 / 列窗口只读工具放行；窗口激活、全局鼠标、全局键盘一律拦截，
+# 强制 LLM 留在 browser_* 上下文，杜绝豆包失败案例里的"工具逃逸"。
+_BROWSER_SESSION_LOCKED = frozenset({
+    "click_at", "send_text", "send_hotkey", "activate_window", "send_keys",
+})
+
+
 class ToolRegistry:
     """工具注册表"""
 
@@ -38,6 +46,10 @@ class ToolRegistry:
         self._tool_specs = {}      # 规范名 -> ToolSpec
         self._tool_signatures = {} # 规范名 -> sha256 签名
         self._register_defaults()
+        # 浏览器会话状态：一旦 browser_launch / browser_navigate 建立浏览器任务，
+        # 同一会话内禁止再调桌面全局工具（click_at/send_text/send_hotkey/activate_window），
+        # 防止 LLM 在网页任务中"逃逸"去操作桌面窗口——工具层硬约束，比 System Prompt 更可靠。
+        self._browser_active = False
 
     @property
     def app(self):
@@ -151,6 +163,10 @@ class ToolRegistry:
         self.register("browser_read_text", self.browser_read_text)
         self.register("browser_screenshot", self.browser_screenshot)
         self.register("browser_wait", self.browser_wait)
+        self.register("browser_refresh", self.browser_refresh)
+        self.register("browser_bring_to_front", self.browser_bring_to_front)
+        self.register("browser_inspect", self.browser_inspect)
+        self.register("browser_find", self.browser_find)
 
         # 系统管理（进程 / 网络 / 环境变量）
         self.register("list_processes", self.list_processes)
@@ -496,6 +512,24 @@ class ToolRegistry:
                 "error": "工具未注册",
                 "error_code": "TOOL_NOT_FOUND",
                 "suggestion": f"该工具未注册；可用 list_tools() 查看规范名（含可用别名）",
+            }
+
+        # —— 浏览器会话硬门控（P：工具层防 LLM 上下文逃逸）——
+        # 一旦处于浏览器任务中，桌面全局鼠标/键盘/窗口工具一律拦截并引导回 browser_* 系列。
+        # 仅 read-only 的 list_windows / find_window / take_screenshot 放行，
+        # 因为它们只是"看"，不会把操作发到错误的窗口。
+        if getattr(self, "_browser_active", False) and canonical in _BROWSER_SESSION_LOCKED:
+            return {
+                "success": False,
+                "tool": canonical,
+                "error": (
+                    f"当前处于浏览器任务（browser_launch/navigate 已建立会话），不允许调用桌面全局工具 "
+                    f"{canonical}。请在浏览器会话内使用 browser_navigate / browser_find / browser_snapshot / "
+                    f"browser_inspect / browser_click / browser_type 完成网页操作；"
+                    f"若确需退出浏览器去操作桌面，请先调用 browser_close。"
+                ),
+                "error_code": "BROWSER_SESSION_LOCK",
+                "suggestion": "使用 browser_* 系列工具，或先 browser_close 再操作桌面",
             }
 
         try:
@@ -1737,14 +1771,30 @@ class ToolRegistry:
         返回：
             页面 target 的 WebSocket 地址
         """
+        # 幂等复用：本会话已连到同一浏览器且仍存活 → 直接复用，不再二次 spawn。
+        # 防止在同一个持久档案（user_data_dir）上再次 launch 抢 9222 端口、
+        # 或 Chrome 因"同一配置目录已在运行"把新进程并回旧实例而出现状态错乱。
+        bs = self.browser
+        if getattr(bs, "connected", False):
+            try:
+                bs._evaluate("1")          # 存活探测
+            except Exception:
+                try:
+                    bs.close()
+                except Exception:
+                    pass
+            else:
+                return getattr(bs, "ws_url", None) or "浏览器已连接"
         try:
             from core.agent_config import load_config
             cfg = load_config().get("browser", {})
             cfg_headless = cfg.get("headless")
             cfg_exec = cfg.get("executable")
+            cfg_profile = cfg.get("user_data_dir") or None
         except Exception:
             cfg_headless = None
             cfg_exec = None
+            cfg_profile = None
         # 配置的浏览器路径优先于自动探测；模型显式传 chrome_path 时仍尊重模型
         if chrome_path is None and cfg_exec:
             chrome_path = cfg_exec
@@ -1752,7 +1802,11 @@ class ToolRegistry:
             headless = cfg_headless
         if headless is None:
             headless = True
-        return self.browser.launch(port=port, headless=headless, chrome_path=chrome_path)
+        ret = self.browser.launch(port=port, headless=headless,
+                                  chrome_path=chrome_path, user_data_dir=cfg_profile)
+        self._browser_active = True
+        self._bring_browser_to_front()
+        return ret
 
     def browser_close(self):
         """
@@ -1761,7 +1815,10 @@ class ToolRegistry:
         返回：
             "浏览器连接已关闭"
         """
-        return self.browser.close()
+        try:
+            return self.browser.close()
+        finally:
+            self._browser_active = False
 
     def browser_navigate(self, url):
         """
@@ -1770,7 +1827,16 @@ class ToolRegistry:
         返回：
             {"url": ..., "title": ...}
         """
-        return self.browser.navigate(url)
+        try:
+            ret = self.browser.navigate(url)
+            # 仅当真正和页面连上（WS 已建立）才锁定为"浏览器任务"，
+            # 避免 navigate 前未 launch 而误锁桌面工具
+            if getattr(self.browser, "_ws", None) is not None:
+                self._browser_active = True
+            return ret
+        finally:
+            # 导航完把浏览器窗口调到前台，让用户直观看到 AI 正在操作哪个页面
+            self._bring_browser_to_front()
 
     def browser_snapshot(self):
         """
@@ -1781,32 +1847,55 @@ class ToolRegistry:
         """
         return self.browser.snapshot()
 
-    def browser_click(self, index=None, selector=None):
+    def browser_click(self, target=None, index=None, selector=None, x=None, y=None):
         """
-        点击指定元素（按快照索引或 CSS 选择器）
+        点击元素（统一目标体系，DOM-SoM-坐标混合架构）。四种定位任选其一：
 
-        参数：
-            index:    由 browser_snapshot 返回的元素下标
-            selector: CSS 选择器（与 index 二选一）
+        A. target='ref'：按稳定元素 ref 点击（browser_inspect 返回的 ref / e17 / f1e17）。
+        B. target='som:N'：按 browser_inspect 带编号截图上的视觉编号 N 点击
+           （内部自动 num→ref→实时定位→真实鼠标点击中心，会话失效会明确报错）。
+        C. index=browser_snapshot 的元素下标 / selector=CSS 选择器 → DOM 语义点击。
+        D. x, y = 最近一次 browser_screenshot 截图上的【图片像素】坐标 → CDP 真实鼠标点击。
+           **当输入框是 contenteditable（如豆包聊天框）、或普通点击"点了没反应"时，
+           先截图再用 x/y 真实点一下聚焦，再 browser_type 输入、browser_press_enter 发送。**
 
-        返回：
-            {"clicked": True, "index", "selector"}
+        返回会自动附带客观验证字段：url_changed / page_changed（P5 客观状态检查，
+        不做 AI 语义判断。页面变化判断基于 URL 与 DOM 指纹——见方案第 24 节）。
         """
-        return self.browser.click(index=index, selector=selector)
+        def _state():
+            try:
+                return {
+                    "url": self.browser._evaluate("location.href") or "",
+                    "sig": self.browser._dom_sig(),
+                }
+            except Exception:
+                return None
+        before = _state()
+        ret = self.browser.click(target=target, index=index, selector=selector, x=x, y=y)
+        after = _state()
+        if before and after:
+            ret["url_changed"] = before["url"] != after["url"]
+            ret["page_changed"] = before["sig"] != after["sig"]
+        return ret
 
-    def browser_type(self, text, index=None, selector=None):
+    def browser_type(self, text, target=None, index=None, selector=None, press_enter=False):
         """
         向指定元素输入文本（中文安全，走 CDP Input.insertText）
 
         参数：
-            text:     要输入的文本
-            index:    browser_snapshot 返回的元素下标
-            selector: CSS 选择器（与 index 二选一）
+            text:          要输入的文本
+            target:        统一目标：ref / 'som:N'（browser_inspect 带编号截图上的编号）。
+            index:         browser_snapshot 返回的元素下标（与 target 二选一）
+            selector:      CSS 选择器（与 target 二选一）
+            press_enter:   输入完成后是否立即按回车键（用于提交表单/发送消息，如豆包聊天框默认回车发送），默认 False。
 
         返回：
-            {"typed", "index", "selector"}
+            {"typed": text, "index"/"selector"/"ref", "sent": press_enter}
         """
-        return self.browser.type_text(text, index=index, selector=selector)
+        ret = self.browser.type_text(text, target=target, index=index, selector=selector)
+        if press_enter:
+            self.browser.press_enter()
+        return {**ret, "sent": press_enter}
 
     def browser_read_text(self, selector=None):
         """
@@ -1832,6 +1921,52 @@ class ToolRegistry:
         """
         return self.browser.screenshot(output=output)
 
+    # -----------------------------------------------------
+    # SoM 视觉定位工具（DOM-SoM-坐标混合架构 P3）
+    # -----------------------------------------------------
+
+    def browser_inspect(self, output=None, max_elements=40, question=""):
+        """
+        对当前页面生成"带可交互元素编号覆盖层"的截图（SoM，等价于内建浏览器定位）。
+
+        截图 + DOM 取框 + 编号标注：模型看着这张图选一个编号，再用
+        browser_click(target='som:N') / browser_type(target='som:N') 对该元素操作。
+        返回的 elements 里 ref 是稳定元素身份（视觉编号只是截图标签）。
+
+        参数：
+            output:       覆盖层截图保存路径；未指定存系统临时目录
+            max_elements: 最多标注的交互元素数量（默认 40；超出按 button/input 优先）
+            question:     预留：视觉模型想确认的问题（当前透视）
+
+        返回：
+            {"image_path", "url", "title", "dpr",
+             "elements": [{"num","ref","role","name","tag","bbox_css","center_css"}...]}
+        """
+        return self.browser.annotated_screenshot(
+            output=output, max_elements=int(max_elements), question=question)
+
+    def browser_find(self, text=None, role=None, tag=None, selector=None, max_results=20):
+        """
+        按目标文字/名称/角色/标签局部搜索网页元素（Level 1 结构化定位）。
+
+        当你只需找网页里某个按钮、链接、输入框、或含某段文字的交互元素时，用本工具
+        （browser_find）拿到带稳定 ref 的局部清单，不要请求整个页面结构（省 token、
+        更快）。返回每条都有 ref，可直接 browser_click(target=ref) / browser_type。
+
+        参数：
+            text:        要匹配的交互元素文字/名称（子串，大小写不敏感；可选）
+            role:        只返回指定 role 的元素（如 button/link/tab/checkbox，可选）
+            tag:         只返回指定标签的元素（button/a/input/textarea，可选）
+            selector:    CSS 选择器限定扫描范围（更聚焦更快，可选）
+            max_results: 最多返回条数，默认 20，上限 100
+
+        返回：
+            [{"ref", "tag", "role", "name", "in_viewport"}, ...]
+        """
+        return self.browser.find(
+            text=text, role=role, tag=tag, selector=selector,
+            max_results=max(1, min(int(max_results), 100)))
+
     def browser_wait(self, selector=None, text=None, timeout=10):
         """
         等待某元素或文本出现（事件驱动式等待）
@@ -1839,12 +1974,65 @@ class ToolRegistry:
         参数：
             selector: CSS 选择器（可选）
             text:     待出现的文字（可选）
-            timeout:  超时秒数，默认 10
+            timeout:  超时秒数，默认 10；内部按数值处理（兼容字符串传参）
 
         返回：
             {"matched": "selector"/"text", ...}
         """
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError):
+            timeout = 10.0
         return self.browser.wait_for(selector=selector, text=text, timeout=timeout)
+
+    def browser_refresh(self, ignore_cache=True):
+        """
+        刷新当前页面（SPA 加载空白 / 元素迟迟不出时的兜底恢复手段）
+
+        场景：browser_navigate 后空白、browser_wait 超时 → browser_refresh 重载并等待，
+        再重新 browser_snapshot。**不要**因此切换到桌面工具。
+
+        参数：
+            ignore_cache: 是否忽略缓存强制刷新，默认 True
+
+        返回：
+            {"url": ..., "title": ...}
+        """
+        return self.browser.refresh(ignore_cache=ignore_cache)
+
+    def browser_bring_to_front(self):
+        """
+        把当前 AI 正在操作的浏览器窗口调到前台
+
+        让用户直观看到执行过程。browser_launch / browser_navigate 已自动调用；
+        若用户中途切走了窗口，可再用本工具把它唤回前台。
+
+        返回：
+            True 成功；False 找不到窗口或非 Windows 平台（不抛错）
+        """
+        ok = self._bring_browser_to_front()
+        return {"brought_to_front": ok}
+
+    def _bring_browser_to_front(self):
+        """尽力把 AI 正在操作的浏览器窗口调到前台（失败静默，不中断任务）。
+
+        靠 launch 时记录的浏览器进程 PID → 枚举窗口匹配 → Win32 SetForegroundWindow。
+        仅用于"让用户看到它在操作"，与页面内 CDP 操作无关（CDP 事件不需要窗口焦点）。
+        """
+        try:
+            proc = getattr(self.browser, "_proc", None)
+            pid = getattr(proc, "pid", None)
+            if not pid:
+                return False
+            wins = self.app.list_windows()
+            candidates = [w for w in wins if w.get("pid") == pid and w.get("title")]
+            if not candidates:
+                return False
+            # Chrome 主窗口标题通常最长，取标题最长的可见窗口作为目标
+            candidates.sort(key=lambda w: len(w.get("title", "")), reverse=True)
+            return bool(self.app.activate_window(candidates[0]["hwnd"]))
+        except Exception:
+            return False
 
     # =====================================================
     # 系统管理工具：进程管理

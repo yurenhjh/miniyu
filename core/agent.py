@@ -35,13 +35,46 @@ from core.safety import (
 )
 
 
+def _now_ms() -> str:
+    """带毫秒的人类可读时间戳（run_log 的时间标记）"""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()) + \
+        f".{int(time.time() * 1000) % 1000:03d}"
+
+
+_SENSITIVE_KEYS = ("password", "passwd", "token", "secret", "api_key",
+                   "authorization", "cookie")
+
+
+def _sanitize_args(args) -> str:
+    """把工具参数压成可记录字符串：截断长文本、脱敏密钥类字段。"""
+    if not isinstance(args, dict):
+        return re.sub(r"\s+", " ", str(args))[:200]
+    out = {}
+    for k, v in args.items():
+        if any(s in str(k).lower() for s in _SENSITIVE_KEYS):
+            out[k] = "***"
+        elif isinstance(v, str):
+            out[k] = v[:80]
+        else:
+            out[k] = v
+    try:
+        return json.dumps(out, ensure_ascii=False)[:300]
+    except Exception:
+        return str(args)[:300]
+
+
 # GUI 类工具列表（执行后建议截图回传 LLM）
 _GUI_TOOLS = {
     "click_at", "send_hotkey", "send_text",
     "browser_launch", "browser_close", "browser_navigate",
-    "browser_click", "browser_type",
+    "browser_click", "browser_type", "browser_inspect", "browser_find",
     "activate_window",
 }
+
+# Observation 生命周期：发送给 LLM 的历史里最多保留最近 N 张观测截图，
+# 更旧的图片裁剪掉（发现 Observation 生命周期是 token 膨胀主因后加入）。
+# 裁剪只作用于当次请求载荷，对话持久记录与产物目录中的原图完整保留。
+_MAX_HISTORY_IMAGES = 2
 
 # 纯对话模式 system prompt（本地小模型，tool_free）：
 # 不传工具也不带工具守则（实测 63 个工具 schema ≈ 7.7K token，CPU 模型光 prompt eval
@@ -91,6 +124,28 @@ SYSTEM_PROMPT = (
     "write_text_file；需要运行/测试代码时用 run_command（如 python xxx.py、pytest、git status），"
     "运行报错就把报错信息作为关键词喂回 search_in_files / read_text_file 定位根因。改完尽量实际运行验证，"
     "最后用中文总结改了哪些文件、为什么改。不要凭猜测整文件重写。"
+    "12. 操作网页元素时遵循『结构化优先、视觉辅助、坐标兜底』，先 Ref、再 Find、再 Snapshot、"
+    "视觉需要才 SoM、最后才坐标。默认先 browser_snapshot 拿到带 ref 的元素清单，能确定就用 "
+    "browser_click(target='e...'，或页面/浏览器返回的 ref 字符串) / browser_type(target='e...', text=...)"
+    "操作，不要一上来就截图。若只需在页面里找某个按钮/链接/输入框，优先用 browser_find（按目标文字/"
+    "名称/角色局部搜索，返回可点击的 ref），大页面别请求整页结构。只有空间布局/图标/Canvas 等无法仅靠"
+    "结构化信息确定时，才调用 browser_inspect 截一张带编号覆盖层的图，对着图选编号后用"
+    "browser_click(target='som:N') 或 browser_type(target='som:N', text=...) 操作。编号只是截图上的"
+    "视觉标签、不是元素真实身份；页面导航或明显变化后旧编号会失效——若点击/输入返回『会话失效』"
+    "的报错，就重新 browser_inspect 再看，不要凭老编号硬点。不要凭截图瞎猜 x/y 坐标，只有 DOM 和 "
+    "SoM 都定位不了的特殊页面（Canvas/地图/白板等）才允许用坐标点击。browser_click/browser_type 返回"
+    "里的 url_changed / page_changed 是客观校验，请据此确认动作是否真的生效，再决定下一步。\n"
+    "13. 一旦进入浏览器任务（调用过 browser_launch / browser_navigate），本会话就应一直留在浏览器上下文，"
+    "只用 browser_* 系列工具完成网页操作，**禁止**中途改用桌面全局工具 click_at / send_text / send_hotkey / "
+    "activate_window（系统在浏览器会话期间会自动拦截这些桌面工具并提示你切回 browser_*）。你不必也不该手动"
+    "调用 activate_window 去激活窗口——AI 操作的浏览器会在导航后自动调到前台，用户自己就能看到执行过程；若希望"
+    "再次把它唤回前台，直接用 browser_bring_to_front。页面空白或元素未加载时，按顺序 browser_wait → "
+    "browser_refresh → browser_snapshot 逐步恢复，**绝不要**因此切换到桌面工具打开桌面版应用。对同一个交互目标"
+    "最多重试 2 次，仍失败就先重新 browser_inspect / browser_snapshot 刷新页面状态再继续，不要无脑重试浪费 token。\n"
+    "14. 读取网页文字/状态一律走结构化：browser_read_text / browser_snapshot / browser_find / 页面 title/URL，"
+    "**不要**靠截图视觉去读 DOM 里已有的文字——例如「告诉我的回复/数字/提交是否成功」直接用 read_text/snapshot 取即可，"
+    "无需截图。执行动作前想清楚再落一步，避免在同一目标上反复「先试 A 不行再试 B」式的长篇自我复述，那会白白烧 token；"
+    "决定要试就一次做对，或直接切 browser_find / browser_inspect 重新获取状态再继续。"
 )
 
 # 服务端联网搜索（百炼 enable_search）生效时追加到 system prompt，显式覆盖守则第 9 条：
@@ -206,6 +261,20 @@ _AGENT_IMAGE_TOOL = {
             },
             "required": ["path"],
         },
+    },
+}
+
+# Agent 工具："token 用量查询"。用户询问『用了多少 token / token 统计 / budget』时调用。
+_AGENT_TOKEN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "token_usage",
+        "description": (
+            "查询当前对话的 token 用量统计（只读）：含本轮合计、本对话累计、预算上限、"
+            "执行步数以及每一步的 prompt/completion/total、携带图片数。"
+            "用户在疑问'花了多少 token / 还剩多少 / 是不是消耗太大 / budget'时，直接调用并把结果告诉用户。"
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
 }
 
@@ -491,6 +560,8 @@ class Agent:
 
         self._turn_artifacts = []
         self._turn_tool_calls: list[dict] = []
+        self._turn_usage_trace: list = []
+        self._run_log = None
         self.conversation.add_user(user_input)
 
         # 用户说"清理截图/清理产物"等 → 直接清当前会话过程产物，不经过 LLM
@@ -524,6 +595,7 @@ class Agent:
         openai_tools = self._agent_openai_tools()
 
         for step in range(1, self.max_steps + 1):
+            self._cur_step = step
             # ---- 1. 调用 LLM ----
             messages = self._request_messages()
             response = self.llm.chat(
@@ -532,6 +604,16 @@ class Agent:
                     self._visible_tools(openai_tools) if self.llm.provider in ("openai_compatible", "failover") else None
                 ),
             )
+
+            # Token/想法/时间 记录（每步：prompt/completion/total + 携带图片数 + 模型的思考）
+            try:
+                pending = [tc["name"] for tc in (response.tool_calls or [])]
+                self._record_llm_usage(
+                    step, ",".join(pending) or "reply", messages,
+                    reasoning=getattr(response, "reasoning", ""),
+                )
+            except Exception:
+                pass
 
             if not response:
                 return "Agent 内部错误：LLM 无响应。"
@@ -574,15 +656,19 @@ class Agent:
                     # screen_inspect 原生视觉分支：tool 结果之后把截图补成观测消息（顺序满足 API 配对要求）
                     self._attach_inspection_observation(result)
 
-                    # GUI 操作 + 视觉模型 → 截图回传（成功/失败都截，失败用于诊断）
+                    # GUI 操作 + 视觉模型 → 截图回传（P1-B：仅"确需视觉/诊断"才截，
+                    # 成功的结构化动作不再自动截图，避免旧图历史累积）
                     if name in _GUI_TOOLS and self.llm.supports_vision:
                         if result.get("success"):
-                            self._capture_and_add_image(
-                                note=f"已执行 {name}，当前屏幕如下，请结合它判断下一步。"
-                            )
+                            if self._browser_action_needs_visual(name, result):
+                                self._capture_and_add_image(
+                                    note=f"已执行 {name}，当前屏幕如下，请结合它判断下一步。",
+                                    browser=name.startswith("browser_"),
+                                )
                         else:
                             self._capture_and_add_image(
-                                note=f"执行 {name} 可能未成功，请结合截图看清原因再决定。"
+                                note=f"执行 {name} 可能未成功，请结合截图看清原因再决定。",
+                                browser=name.startswith("browser_"),
                             )
 
                 # 关键修复：离线脑执行完工具后直接返回结果，不再循环调 LLM
@@ -647,6 +733,8 @@ class Agent:
 
         self._turn_artifacts = []
         self._turn_tool_calls: list[dict] = []
+        self._turn_usage_trace: list = []
+        self._run_log = None
         self.conversation.add_user(user_input)
 
         # 用户说"清理截图/清理产物"等 → 直接清当前会话过程产物，不经过 LLM
@@ -673,18 +761,25 @@ class Agent:
         )
 
         for step in range(1, self.max_steps + 1):
+            self._cur_step = step
             # 轮次间隙也检查打断（长时间工具执行后进入下一轮 LLM 调用前）
             if stop_check is not None and stop_check():
                 yield self._stopped_response("")
                 return
             messages = self._request_messages()
             collected_text = ""
+            thought_holder = {"reasoning": ""}
 
-            llm_stream = self.llm.chat_stream(
-                messages,
-                tools=None if (chat_mode or (code_interpreter_turn and step == 1)) else (
-                    self._visible_tools(openai_tools) if self.llm.provider in ("openai_compatible", "failover") else None
+            llm_stream = self._tagged_stream(
+                self.llm.chat_stream(
+                    messages,
+                    tools=None if (chat_mode or (code_interpreter_turn and step == 1)) else (
+                        self._visible_tools(openai_tools) if self.llm.provider in ("openai_compatible", "failover") else None
+                    ),
                 ),
+                step,
+                messages,
+                thought_holder,
             )
             stopped = False
             for chunk in llm_stream:
@@ -693,6 +788,7 @@ class Agent:
                     break
                 if chunk.finish_reason == "reasoning":
                     # 思考 token 透传给前端（DeepSeek 式思考过程展示），不进对话历史
+                    thought_holder["reasoning"] += getattr(chunk, "reasoning", "") or ""
                     yield chunk
                 elif chunk.finish_reason == "streaming":
                     collected_text += chunk.text
@@ -734,15 +830,18 @@ class Agent:
                         # screen_inspect 原生视觉分支：tool 结果之后把截图补成观测消息
                         self._attach_inspection_observation(result)
 
-                        # GUI 操作 + 视觉模型 → 截图回传（成功/失败都截，失败用于诊断）
+                        # GUI 操作 + 视觉模型 → 截图回传（P1-B：仅"确需视觉/诊断"才截）
                         if name in _GUI_TOOLS and self.llm.supports_vision:
                             if result.get("success"):
-                                self._capture_and_add_image(
-                                    note=f"已执行 {name}，当前屏幕如下，请结合它判断下一步。"
-                                )
+                                if self._browser_action_needs_visual(name, result):
+                                    self._capture_and_add_image(
+                                        note=f"已执行 {name}，当前屏幕如下，请结合它判断下一步。",
+                                        browser=name.startswith("browser_"),
+                                    )
                             else:
                                 self._capture_and_add_image(
-                                    note=f"执行 {name} 可能未成功，请结合截图看清原因再决定。"
+                                    note=f"执行 {name} 可能未成功，请结合截图看清原因再决定。",
+                                    browser=name.startswith("browser_"),
                                 )
 
                     # 离线脑执行完工具后直接返回
@@ -830,6 +929,7 @@ class Agent:
         总开关关闭 → +_OFFLINE_HINT（均显式覆盖守则第 9 条）。
         """
         messages = self.conversation.get_window()
+        messages = self._trim_history_images(messages)
         if self.llm.provider in ("openai_compatible", "failover"):
             # 完整保留工具调用历史（支持 function calling 的模型可续接多步任务）；
             # 不支持的历史格式由 OpenAICompatibleClient 收到 400 后自动清理重试
@@ -861,13 +961,20 @@ class Agent:
             client.reset_runtime_flags()
 
     def _execute_one(self, name: str, args: dict) -> dict:
-        """
-        执行单个工具/技能调用（含安全确认）。
+        """执行单个工具/技能调用（含安全确认），并把每一步"操作"记入 run_log。
 
         白名单组合技能（如 app_send_message）走技能库（_execute_skill），
         其余走底层工具注册表（_execute_tool）；screen_inspect 是 Agent 自带的
         视觉能力函数（截图理解），单独分发。
         """
+        start = time.time()
+        result = self._dispatch_tool(name, args)
+        self._log_action(name, args, result, time.time() - start)
+        return result
+
+    def _dispatch_tool(self, name: str, args: dict) -> dict:
+        if name == "token_usage":
+            return self._tool_token_usage(args)
         if name == "screen_inspect":
             return self._execute_screen_inspect(args)
         if name == "read_image":
@@ -1029,7 +1136,227 @@ class Agent:
     def _with_reminder(self, text: str) -> str:
         """给最终回复附上产物提醒（仅在确实产生过产物时追加）"""
         r = self._artifact_reminder()
-        return text + r if r else text
+        note = self._usage_note()
+        tail = (r + "\n").rstrip() + ("\n\n" + note if note else "")
+        return text + tail if (r or note) else text
+
+    # ============================================================
+    # Token 用量记录（LLM Usage Trace）
+    #   1) 每步一条 jsonl 写入会话产物目录 usage_trace<ts>.jsonl，供优化排查；
+    #   2) _usage_note() 在最终回复末尾给用户看“本轮/本对话/预算”三栏；
+    #   3) token_usage 工具可随时查询当前累计用量。
+    # ============================================================
+
+    def _primary_llm(self):
+        """取实际发请求的底层 LLM 客户端（Failover 下返回 primary）"""
+        return getattr(self.llm, "primary", self.llm)
+
+    def _count_obs(self, messages) -> dict:
+        """统计一条消息列表里的图片数与文本字符数（容忍多种 content 形态）"""
+        images = chars = msgs = 0
+        for m in messages or []:
+            if not isinstance(m, dict):
+                continue
+            msgs += 1
+            c = m.get("content")
+            if isinstance(c, list):
+                for part in c:
+                    if isinstance(part, dict):
+                        ptype = str(part.get("type", ""))
+                        if ptype in ("image_url", "image", "image_content", "input_image") or "image" in ptype:
+                            images += 1
+                        else:
+                            chars += len(str(part.get("text", "")))
+            else:
+                c = str(c or "")
+                chars += len(c)
+                if "data:image" in c:
+                    images += c.count("data:image")
+        return {"messages": msgs, "images": images, "chars": chars}
+
+    def _trim_history_images(self, messages) -> list:
+        """Observation 生命周期：保留最近 N 张观测截图，更旧的从 LLM 载荷剥离。
+
+        只裁剪"图片部分"并保留其文字说明，且不写回对话持久记录（产物/审计仍保留原图）。
+        """
+        keep = getattr(self, "obs_max_history_images", _MAX_HISTORY_IMAGES) or 0
+        if keep <= 0:
+            return messages
+        idx = [i for i, m in enumerate(messages)
+               if isinstance(m.get("content"), list)
+               and any(isinstance(p, dict) and "image_url" in p for p in m["content"])]
+        if len(idx) <= keep:
+            return messages
+        drop = set(idx[:-keep])
+        out = []
+        for i, m in enumerate(messages):
+            if i in drop:
+                c = m.get("content")
+                if isinstance(c, list):
+                    newc = [p for p in c
+                            if not (isinstance(p, dict) and "image_url" in p)]
+                    m = dict(m)
+                    m["content"] = newc or [{"type": "text", "text": "（历史截图已省略）"}]
+            out.append(m)
+        return out
+
+    def _browser_action_needs_visual(self, name: str, result: dict) -> bool:
+        """判断一次动作后是否需要自动截图回传（P1-B：结构化优于视觉）。
+
+        桌面全局操作无结构化回读 → 保底截图；浏览器内：
+        - launch/navigate：新页面需视觉定位 → 截图；
+        - click 带来页面/URL 变化：重新定位 → 截图；
+        - snapshot/find/type/wait/read 等结构化动作 → 不截图。
+        """
+        if not name.startswith("browser_"):
+            return True
+        if name in ("browser_launch", "browser_navigate"):
+            return True
+        if name in ("browser_click",):
+            return bool(result.get("page_changed") or result.get("url_changed"))
+        return False
+
+    def _record_llm_usage(self, step: int, tool_hint: str, messages,
+                          reasoning: str = "", elapsed_ms: float = 0.0):
+        """记录本轮 LLM 请求：时间、想法(reasoning/文本)、token 用量与携带图片数。
+
+        写入每次运行唯一的 run_log_*.jsonl（kind='llm'，与操作行合并成完整时间线）。
+        """
+        llm = self._primary_llm()
+        usage = {}
+        if hasattr(llm, "_last_usage"):
+            usage = dict(llm._last_usage or {})
+        details = usage.get("prompt_tokens_details") or {}
+        img_tok = details.get("image_tokens", 0) if isinstance(details, dict) else 0
+        comp_details = usage.get("completion_tokens_details") or {}
+        reasoning_tok = int(
+            usage.get("reasoning_tokens", 0)
+            or comp_details.get("reasoning_tokens", 0)
+            or 0
+        ) if isinstance(comp_details, dict) else int(usage.get("reasoning_tokens", 0) or 0)
+        obs = self._count_obs(messages)
+        total_used = int(getattr(llm, "total_tokens_used", 0) or 0)
+        row = {
+            "kind": "llm",
+            "ts": _now_ms(),
+            "step": int(step),
+            "tool_hint": tool_hint,
+            "thought": (reasoning or "").strip(),
+            "elapsed_ms": round(elapsed_ms, 1),
+            "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+            "total_tokens": int(usage.get("total_tokens", 0) or 0),
+            "reasoning_tokens": reasoning_tok,
+            "image_tokens": int(img_tok or 0),
+            "message_count": obs["messages"],
+            "image_count": obs["images"],
+            "char_count": obs["chars"],
+            "cum_total_used": total_used,
+        }
+        self._turn_usage_trace.append(row)
+        self._append_run_log(row)
+
+    def _log_action(self, name: str, args: dict, result: dict, elapsed: float):
+        """记录一次工具/技能操作：时间、名称、参数、成功与否、耗时（kind='action'）。"""
+        ok = bool(result.get("success"))
+        detail = result.get("result") if ok else result.get("error", "")
+        if isinstance(detail, (dict, list)):
+            import json as _j
+            try:
+                detail = _j.dumps(detail, ensure_ascii=False)[:400]
+            except Exception:
+                detail = str(detail)[:400]
+        else:
+            detail = str(detail)[:400]
+        row = {
+            "kind": "action",
+            "ts": _now_ms(),
+            "step": int(getattr(self, "_cur_step", 0) or 0),
+            "tool": name,
+            "args": _sanitize_args(args),
+            "ok": ok,
+            "elapsed_ms": round(elapsed * 1000, 1),
+            "result": detail,
+        }
+        self._append_run_log(row)
+
+    def _append_run_log(self, rec: dict):
+        """把一行追加到本次运行的 run_log_*.jsonl（会话产物目录）。"""
+        self._ensure_run_log()
+        try:
+            with open(self._run_log, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _ensure_run_log(self) -> str:
+        """惰性创建本次运行的 run_log 文件路径（每次运行一份）。"""
+        if not getattr(self, "_run_log", None):
+            self._run_log = os.path.join(
+                self._session_artifact_dir(),
+                f"run_log_{int(time.time() * 1000)}.jsonl",
+            )
+        return self._run_log
+
+    def _usage_note(self) -> str:
+        """生成供最终回复追加的 token 概览（本轮/本对话/预算）"""
+        if not getattr(self, "_turn_usage_trace", None):
+            return ""
+        llm = self._primary_llm()
+        turn = self._turn_usage_trace[-1]
+        steps = len(self._turn_usage_trace)
+        turn_total = turn.get("total_tokens", 0)
+        # 无实际消耗（离线脑/本地 mock）时不显示，避免噪音
+        if not turn_total or turn_total <= 0:
+            return ""
+        turn_images = sum(r.get("image_count", 0) for r in self._turn_usage_trace)
+        cum = int(getattr(llm, "total_tokens_used", 0) or 0)
+        cum_in = sum(int(r.get("prompt_tokens", 0) or 0) for r in self._turn_usage_trace)
+        cum_out = sum(int(r.get("completion_tokens", 0) or 0) for r in self._turn_usage_trace)
+        budget = getattr(llm, "max_total_tokens", None)
+        img_part = f"，携带图片 {turn_images} 张" if turn_images else ""
+        budget_part = f" / 预算 {budget}" if budget and budget > 0 else ""
+        return (
+            f"📊 Token 用量：本任务 {steps} 步、本轮合计约 {turn_total:,}{img_part}；"
+            f"本对话累计约 {cum:,}（输入 {cum_in:,} / 输出 {cum_out:,}）{budget_part}。"
+            f"想要分步明细或手动释放，可对我说『token』。"
+        )
+
+    def _tool_token_usage(self, args: dict) -> dict:
+        """token_usage 工具：返回当前对话的 token 用量明细。"""
+        llm = self._primary_llm()
+        rows = list(getattr(self, "_turn_usage_trace", None) or [])
+        per_step = [
+            {k: r.get(k) for k in
+             ("step", "tool_hint", "prompt_tokens", "completion_tokens",
+              "total_tokens", "image_tokens", "image_count")}
+            for r in rows
+        ]
+        return {
+            "success": True,
+            "summary": {
+                "turn_total": sum(r.get("total_tokens", 0) for r in rows),
+                "conversation_total": int(getattr(llm, "total_tokens_used", 0) or 0),
+                "max_allowed": getattr(llm, "max_total_tokens", 0) or 0,
+                "steps": len(rows),
+                "images_this_turn": sum(r.get("image_count", 0) for r in rows),
+            },
+            "per_step": per_step,
+        }
+
+    def _tagged_stream(self, gen, step: int, messages, thought_holder=None):
+        """包一层流式生成器：在流耗尽时记录该步 token 用量（finally 保证触发）。
+
+        thought_holder 由外层 for 循环在收流时累积模型的 thinking，最终一并落盘。
+        """
+        try:
+            yield from gen
+        finally:
+            try:
+                reasoning = (thought_holder or {}).get("reasoning", "") or ""
+                self._record_llm_usage(step, "stream", messages, reasoning=reasoning)
+            except Exception:
+                pass
 
     def _agent_openai_tools(self) -> list:
         """模型可见函数全集 = 59 底层工具 + 白名单组合技能 + 视觉能力函数 screen_inspect/read_image
@@ -1037,7 +1364,8 @@ class Agent:
         注意：本方法返回全集（供测试与统计引用）；服务端联网搜索生效时，
         由 _visible_tools() 在 ReAct 每一步动态隐藏本地 browser_search。
         """
-        return self.api.list_tools_openai() + self.api.list_skills_openai() + [dict(_AGENT_VISION_TOOL), dict(_AGENT_IMAGE_TOOL)]
+        return self.api.list_tools_openai() + self.api.list_skills_openai() + \
+            [dict(_AGENT_VISION_TOOL), dict(_AGENT_IMAGE_TOOL), dict(_AGENT_TOKEN_TOOL)]
 
     def _visible_tools(self, tools: list) -> list:
         """
@@ -1061,9 +1389,13 @@ class Agent:
         return [t for t in tools
                 if t.get("function", {}).get("name") not in hidden]
 
-    def _capture_and_add_image(self, note: str = ""):
+    def _capture_and_add_image(self, note: str = "", browser: bool = False):
         """
         截图 → 存入过程产物目录 → 把【真实 base64】以观测消息加入对话（供视觉模型查看）。
+
+        browser=True 时优先截"浏览器当前页面"（browser_screenshot），失败再退回桌面全屏
+        （take_screenshot）。这是 DOM-SoM-坐标混合架构 P1 的"截图分流"修复：浏览器动作后
+        模型应看到干净的页面 viewport，而不是"整块桌面里嵌个 Edge 窗口"。
 
         修复背景：早期实现把 take_screenshot 返回的【文件路径字符串】当 base64 直接拼进
         data:image/... URL，模型拿到的是坏图；这里改为读文件后再 base64。
@@ -1073,11 +1405,8 @@ class Agent:
             shots = os.path.join(self._session_artifact_dir(), "shots")
             os.makedirs(shots, exist_ok=True)
             path = os.path.join(shots, f"shot_{int(time.time() * 1000)}.png")
-            scr = self.api.execute_tool("take_screenshot", {"output": path})
-            img_path = scr.get("result") if scr.get("success") else None
-            if not isinstance(img_path, str):
-                img_path = (img_path or {}).get("path")
-            if not img_path or not os.path.isfile(img_path):
+            img_path = self._grab_screenshot(tool_browser=browser, path=path)
+            if not img_path:
                 return None
             with open(img_path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode("ascii")
@@ -1086,6 +1415,19 @@ class Agent:
             return img_path
         except Exception:
             return None
+
+    def _grab_screenshot(self, tool_browser: bool, path: str):
+        """按场景取截图：浏览器动作优先页面截图（browser_screenshot），取不到再退回桌面全屏。"""
+        candidates = (["browser_screenshot", "take_screenshot"] if tool_browser
+                      else ["take_screenshot"])
+        for tool in candidates:
+            scr = self.api.execute_tool(tool, {"output": path})
+            img_path = scr.get("result") if scr.get("success") else None
+            if not isinstance(img_path, str):
+                img_path = (img_path or {}).get("path")
+            if isinstance(img_path, str) and os.path.isfile(img_path):
+                return img_path
+        return None
 
     def _run_vision_bridge(self, image_path: str, question: str) -> Optional[str]:
         """调项目内视觉桥（config.yaml 的 vision_bridge 段，独立于主 llm 的视觉 API）
