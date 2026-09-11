@@ -66,6 +66,8 @@ class BrowserController:
         self._ws = ws          # 已连接的 WebSocket（可注入，便于测试）
         self._msg_id = 0
         self._events = []
+        self._proc = None          # launch() 拉起的浏览器进程（close 时回收，防泄漏）
+        self._user_data_dir = None
 
     # =====================================================
     # 连接生命周期
@@ -103,7 +105,8 @@ class BrowserController:
         if headless:
             args.append("--headless=new")
         args.append("about:blank")
-        subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._user_data_dir = user_data_dir
         ws_url = self._discover_page_ws(port)
         self.connect(ws_url)
         return ws_url
@@ -130,13 +133,34 @@ class BrowserController:
         return self
 
     def close(self):
-        """关闭 WebSocket 连接"""
+        """关闭 WebSocket 连接，并回收 launch() 拉起的浏览器进程与临时目录（防进程泄漏）"""
         if self._ws is not None:
             try:
                 self._ws.close()
             finally:
                 self._ws = None
+        self._kill_proc()
         return "浏览器连接已关闭"
+
+    def _kill_proc(self):
+        """终止自己拉起的浏览器进程树，并清理临时用户数据目录"""
+        if self._proc is not None:
+            try:
+                if os.name == "nt":
+                    # 进程树整体结束（浏览器有大量子进程，光 kill 主进程会留孤儿）
+                    subprocess.run(["taskkill", "/PID", str(self._proc.pid), "/T", "/F"],
+                                   capture_output=True, timeout=8)
+                else:
+                    self._proc.terminate()
+            except Exception:
+                pass
+            self._proc = None
+        if self._user_data_dir:
+            try:
+                import shutil
+                shutil.rmtree(self._user_data_dir, ignore_errors=True)
+            finally:
+                self._user_data_dir = None
 
     # =====================================================
     # 底层 CDP
@@ -297,11 +321,14 @@ class BrowserController:
             pf86 = Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
             local = Path(os.environ.get("LOCALAPPDATA", ""))
             candidates = [
+                # 优先 Edge：新版 Chrome/Edge ≥136 对默认档案禁用远程调试，且实测 Edge
+                # 用独立 user-data-dir + 调试端口 更稳定（见 examples/browser_doubao_demo.py）。
+                local / "Microsoft/Edge/Application/msedge.exe",
+                pf86 / "Microsoft/Edge/Application/msedge.exe",
+                pf / "Microsoft/Edge/Application/msedge.exe",
                 local / "Google/Chrome/Application/chrome.exe",
                 pf / "Google/Chrome/Application/chrome.exe",
                 pf86 / "Google/Chrome/Application/chrome.exe",
-                pf / "Microsoft/Edge/Application/msedge.exe",
-                pf86 / "Microsoft/Edge/Application/msedge.exe",
             ]
         else:
             candidates = [

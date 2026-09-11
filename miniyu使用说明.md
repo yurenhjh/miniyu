@@ -236,6 +236,10 @@ run_miniyu_cli.bat   :: 命令行
 > - **advanced 高级授权**：只有**删除文件**类（删文件/文件夹、按类型批量删、清空回收站）先确认，执行命令/杀进程/QQ 发消息/发邮件自动放行；
 > - **full 全自动**：一律不确认（含文件删除）。网页版切到「全自动」会先弹一次浏览器确认把关。
 > QQ 发送的屏幕 OCR 核对门不随档位关闭——自动放行不等于会发错群。
+>
+> > 确认框是一次性抓手的：点一次「允许/拒绝」就生效，**不会反复弹**（历史版本偶发点完又弹同一个确认框，已修复——确认后状态被正确重置）。
+> 
+> **浏览器自动化默认用 Edge**：Windows 下自动探测时 Edge 优先（新版 Chrome/Edge ≥136 对默认档案禁用远程调试，实测 Edge 更稳，参考 `examples/browser_doubao_demo.py`）。想强制用某款浏览器，在 `config.yaml` 的 `browser.executable` 填它的完整路径即可；`browser.headless=false` 时窗口可见，方便演示/录屏看 AI 操作。
 
 > 想临时切回**离线脑**（不联网、只认预设指令）：把 `config.yaml` 里 `provider: openai_compatible` 改成 `deterministic` 即可。
 

@@ -107,6 +107,16 @@ agent:
     audit_path: ""          # 如 "audit.jsonl"（留空不落盘，只在内存）
     rag_max_docs: 500       # 知识库保留轨迹上限
 
+# 浏览器（browser）—— 浏览器结构化控制（CDP，Chrome/Edge）
+# headless=false：可见窗口，演示/录屏时老师可亲眼看到 AI 在浏览器里操作
+# headless=true ：后台无头运行，不弹窗口（适合无人值守）
+# executable：浏览器可执行文件路径（可选）。留空=自动探测（Windows 优先 Edge）。
+#             想强制用某款浏览器就填全路径，例如 Edge：
+#             "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+browser:
+  headless: false
+  port: 9222
+
 memory:
   storage_dir: "conversations"
   auto_summarize: false

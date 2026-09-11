@@ -1723,18 +1723,35 @@ class ToolRegistry:
     # 新增：浏览器结构化操作（基于 CDP）
     # =====================================================
 
-    def browser_launch(self, port=9222, headless=True, chrome_path=None):
+    def browser_launch(self, port=9222, headless=None, chrome_path=None):
         """
         启动并连接一个浏览器（Chrome/Edge/Chromium）
 
         参数：
             port:        调试端口，默认 9222
-            headless:    是否无头模式，默认 True
-            chrome_path: 浏览器可执行文件路径（未指定自动探测）
+            headless:    是否无头（不可见）模式；**config.yaml 的 browser.headless 为主宰**，
+                         模型传的参数会被配置覆盖（默认 false=可见窗口，老师/你可亲眼看到 AI 操作）
+            chrome_path: 浏览器可执行文件路径（未指定自动探测；config.yaml 的
+                         browser.executable 优先于自动探测，可显式指定 Edge）
 
         返回：
             页面 target 的 WebSocket 地址
         """
+        try:
+            from core.agent_config import load_config
+            cfg = load_config().get("browser", {})
+            cfg_headless = cfg.get("headless")
+            cfg_exec = cfg.get("executable")
+        except Exception:
+            cfg_headless = None
+            cfg_exec = None
+        # 配置的浏览器路径优先于自动探测；模型显式传 chrome_path 时仍尊重模型
+        if chrome_path is None and cfg_exec:
+            chrome_path = cfg_exec
+        if cfg_headless is not None:   # 配置优先，保证演示可见性不受模型参数影响
+            headless = cfg_headless
+        if headless is None:
+            headless = True
         return self.browser.launch(port=port, headless=headless, chrome_path=chrome_path)
 
     def browser_close(self):

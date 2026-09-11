@@ -121,6 +121,12 @@ def _web_confirm_handler(pv):
     if not result:
         raise ConfirmationDenied(pv.get("name", ""))
 
+    # 防御性重置：确认通过后把 status 改回 pending（与 /confirm 接口的修复一致），
+    # 避免轮询通道在下次终态事件前一直读到 "confirm" 反复弹窗。
+    with _tasks_lock:
+        if task_id in _tasks and _tasks[task_id].get("status") == "confirm":
+            _tasks[task_id]["status"] = "pending"
+
     return True
 
 
@@ -2419,6 +2425,10 @@ def confirm_task(task_id):
 
     task["confirm_result"] = allow
     task["confirm_event"].set()
+    # 关键修复：确认/拒绝后立即把 status 从 "confirm" 重置回 "pending"。
+    # 否则前端 confirmAllow() 点完会再 startPolling()，而 status 一直卡在
+    # "confirm"，轮询每次都触发 showConfirmModal → 弹窗反复弹出（"要点好几次确认"）。
+    task["status"] = "pending"
 
     return jsonify({"success": True})
 
