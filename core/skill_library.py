@@ -29,7 +29,7 @@ from core import safety
 #   1. 高层次——模型应该整段调用，而不是拆成激活窗口/点击/输入等零散原语；
 #   2. 参数全部可 JSON 序列化（Python 闭包等无法经 tool_call 传输，只能由技能内部构造）。
 # 其余技能（文件整理/删除/索引等）仍只供 ExecutionEngine / 上层代码直接调用，不暴露给模型，
-# 避免 26 个技能与 57 个底层工具大面积重叠、模型误选低层原语。
+# 避免 26 个技能与 59 个底层工具大面积重叠、模型误选低层原语。
 # 入选白名单的 5 个 = app_send_message / read_qq_chat / send_email / browser_search / browser_extract。
 _AGENT_SKILL_SCHEMAS = {
     "app_send_message": {

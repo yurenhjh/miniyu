@@ -186,7 +186,8 @@ class SecuritySandbox:
 
     # 危险指令/路径（对齐设计书 SecuritySandbox 示例；含 Windows/PowerShell 变体）
     DANGEROUS_ACTIONS = ("rm ", "format", "shutdown", "dd ", "mkfs", "fdisk",
-                         "stop-computer", "restart-computer", "remove-item")
+                         "stop-computer", "restart-computer", "remove-item",
+                         "del /f /s", "rd /s /q", "diskpart", "reg delete")
     PROTECTED_PATHS = ("/etc", "/usr", "/root", "/boot", "/etc/passwd", "/etc/shadow")
 
     def __init__(self, check_safe: Callable = None, audit: AuditLog = None):

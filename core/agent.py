@@ -885,8 +885,11 @@ class Agent:
         run_command 等带 cmd/command 参数的工具若命中 DANGEROUS_ACTIONS
         （rm/format/shutdown/dd/mkfs/fdisk/Stop-Computer 等）或受保护路径，
         直接返回拒绝结果并记审计，避免"确认弹窗被误点"的社交工程绕过。
+        该拦截**与授权档位无关、也不依赖 coordinator 是否启用**：即使
+        coordinator.enabled=false（无审计/RAG），也始终构造一个独立沙箱兜底，
+        保证 shutdown/rm -rf/format 等破坏性指令在任何档位下都不会被执行。
         """
-        if self.coordinator is None or not isinstance(args, dict):
+        if not isinstance(args, dict):
             return None
         cmd = ""
         for k in ("cmd", "command"):
@@ -896,7 +899,11 @@ class Agent:
                 break
         if not cmd:
             return None
-        check = self.coordinator.sandbox.check_permission(cmd, cmd)
+        sandbox = getattr(self.coordinator, "sandbox", None)
+        if sandbox is None:
+            from core.coordinator import SecuritySandbox
+            sandbox = SecuritySandbox()
+        check = sandbox.check_permission(cmd, cmd)
         if check.get("approved"):
             return None
         return {

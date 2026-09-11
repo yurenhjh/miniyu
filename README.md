@@ -58,11 +58,11 @@ bash run_miniyu_web.sh           # Windows：run_miniyu_web.bat
 **语音输入浏览器要求：一键语音（🎤）用浏览器原生 Web Speech API**，仅 **Chrome / Edge** 支持；Windows 上**推荐 Edge**（走微软语音服务、国内可用），Chrome 走谷歌服务大陆常连不上。其余浏览器自动隐藏该按钮、不影响文字输入。
 
 > **近期变更（2026-09-11）**
-> - **安全机制实测 + 危险指令硬拦截接入 Agent 执行链**：Web 界面（真实 LLM qwen3.7-flash，最低授权 base 档）实测危险操作——`rm -rf /`、`format` 被直接拒绝；`shutdown` 修复前只弹确认窗，**修复后直接拒绝**（新增 `core/agent.py` `_sandbox_guard`：run_command 等带 cmd 参数的工具命中 `DANGEROUS_ACTIONS` 绕过确认门硬拦截，杜绝"确认弹窗被误点"的社交工程绕过；`DANGEROUS_ACTIONS` 扩充 Windows/PowerShell 变体 Stop-Computer/Restart-Computer/Remove-Item）。新增 `tests/test_agent.py::TestSandboxGuard` 13 例，**552 全绿**；实测截图入 `docs/evidence/security_test_*.png`，记录见 `docs/第4组安全机制验证记录.md`。
-> - **README 收尾更新**：第 4 周计划 4 项全部标记完成 ✅（工具签名/权限控制/整体集成/最终报告与PPT）；测试数 494 → **539** 全量更新（10. 运行测试 / 13. 技术特点 / 14. 跨平台兼容）。
+> - **安全机制实测 + 危险指令硬拦截接入 Agent 执行链（任意授权档位均生效）**：Web 界面（真实 LLM qwen3.7-flash，最低授权 base 档）实测危险操作——`rm -rf /`、`format` 被直接拒绝；`shutdown` 修复前只弹确认窗，**修复后直接拒绝**（`core/agent.py` `_sandbox_guard` 在确认门前无条件执行：run_command 等带 cmd/command 参数的工具命中 `DANGEROUS_ACTIONS` 直接返回拒绝并审计，杜绝"确认弹窗被误点"的社交工程绕过；拦截**不看授权档位 base/advanced/full**，即使 `coordinator.enabled=false` 也会构造独立沙箱兜底，保证 shutdown/rm -rf/format 等破坏性指令在任何情况下都不会被执行；`DANGEROUS_ACTIONS` 覆盖 Stop-Computer/Restart-Computer/Remove-Item/del /f /s/rd /s /q/diskpart/reg delete 等 Windows 变体）。新增 `tests/test_agent.py::TestSandboxGuard` 19 例（含 coordinator 关闭回归），**558 全绿**；实测截图入 `docs/evidence/security_test_*.png`，记录见 `docs/第4组安全机制验证记录.md`。
+> - **README 收尾更新**：第 4 周计划 4 项全部标记完成 ✅（工具签名/权限控制/整体集成/最终报告与PPT）；全量测试 **558** 更新（10. 运行测试 / 13. 技术特点 / 14. 跨平台兼容）。
 
 > **近期变更（2026-09-09）**
-> - **第 4 组提交文档补齐（docs/）**：对照任务设计书评分/验收，新增 5 份可提交文档——`docs/第4组调研报告.md`、`docs/第4组设计文档.md`、`docs/第4组单元测试报告.md`、`docs/第4组联调与集成报告.md`、`docs/第4组交付说明.md`（含提交/打包清单与一键复现）。功能面核对第 4 组要求**无缺失且超额**（59 工具 + 26 技能 + 调用统计 + 工具签名 + 57 Mock + 512 测试全绿），本轮无需改代码。
+> - **第 4 组提交文档补齐（docs/）**：对照任务设计书评分/验收，新增 5 份可提交文档——`docs/第4组调研报告.md`、`docs/第4组设计文档.md`、`docs/第4组单元测试报告.md`、`docs/第4组联调与集成报告.md`、`docs/第4组交付说明.md`（含提交/打包清单与一键复现）。功能面核对第 4 组要求**无缺失且超额**（59 工具 + 26 技能 + 调用统计 + 工具签名 + 59 Mock + 558 测试全绿），本轮无需改代码。
 > - **第 5 组职责补齐（整体设计完整性）**：对照设计书「系统协调+安全+RAG」核查，安全层早已完整，**补齐 4 项缺失**——新增 `core/coordinator.py`：`SystemCoordinator`（模块编排 1→5→2→3→4 数据流）+ `SecuritySandbox`（四层安全：权限/沙箱/签名/隐私）+ `RAGKnowledgeBase`（轻量向量检索执行轨迹，零依赖）+ `AuditLog`（审计日志可落盘）+ `MockCoordinator/MockRAG/MockAudit`（降级 Mock）。已**接入 Agent**：`run/run_stream` 结束自动记审计 + 存 RAG 轨迹（`agent.coordinator.enabled` 可关，默认开）。新增 27 项测试全绿。
 > - **调研报告补字达标 + 汇报 PPT + PDF 版**：`docs/第4组调研报告.md` 汉字 2453 → **约 4000 字**（≥3000 达标，补「与第 5 组协同调研」「MCP 演进」「对标 Claude Computer Use」「调研局限与后续工作」章节）；新增 `docs/第4组汇报PPT.pptx`（**18 页 ≥15 页**，检查点 4 汇报用）；新增 `docs/第4组调研报告.pdf`（**正文宋体小四号**，由 Edge headless 打印，脚本 `docs/scripts/md_to_pdf.py` 可复现，`.md` 源文件保留）。
 > - **Web 6 场景实测演示全通过**：启动 web（http://localhost:5000）驱动真实 LLM qwen3.7-flash，设计书演示场景表 6 个场景**全部一次跑通**——打开文件管理器、导航目录、建文件夹、编辑文本、窗口切换、整理下载目录（14 步工具链自主完成扫描→分类→建夹→移动）；均经磁盘实体验证。新增 `docs/第4组Web演示记录.md` + 演示脚本 `examples/demo_web_scenarios.py`。
@@ -346,7 +346,7 @@ group4_tools_os_skills/
 │   ├── mock_tools.py              # Mock版工具注册表（59个工具）
 │   └── mock_skills.py             # Mock版技能库（26个技能）
 │
-├── tests/                         # 单元测试（共 552 个，全部通过）
+├── tests/                         # 单元测试（共 558 个，全部通过）
 │   ├── __init__.py
 │   ├── test_tool_registry.py      # ToolRegistry测试（92个：全部工具+新工具+异常+别名+错误码）
 │   ├── test_skills.py             # SkillLibrary测试（43个：基础+扩展+搜索+Agent）
@@ -821,7 +821,7 @@ registry.call("browser_close", {})
 # 10. 运行测试
 
 ```bash
-# 运行所有测试（共 539 个）
+# 运行所有测试（共 558 个）
 python -m pytest tests/ -v
 
 # 运行单个测试文件
@@ -908,7 +908,7 @@ python -m pytest tests/test_agent_read_web.py -v
 
 | 系统 | 状态 | 说明 |
 |------|------|------|
-| Windows 11 | ✅ 通过 | 552个测试全部通过，Demo正常运行 |
+| Windows 11 | ✅ 通过 | 558个测试全部通过，Demo正常运行 |
 | Ubuntu/Linux | ✅ 兼容 | 使用 `pathlib` / `shutil` 等跨平台库，无需修改 |
 | macOS | ✅ 预期兼容 | 内部测试未进行，理论兼容 |
 

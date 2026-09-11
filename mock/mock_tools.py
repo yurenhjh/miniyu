@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 class MockToolRegistry:
-    """Mock版工具注册表（57个工具全量Mock）"""
+    """Mock版工具注册表（59个工具全量Mock，与正式版 ToolRegistry 同数）"""
 
     def __init__(self):
         self.tools = {}

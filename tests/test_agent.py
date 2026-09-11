@@ -270,6 +270,7 @@ class TestSandboxGuard:
         ("rm -rf /", "危险指令"),
         ("rm -rf ~/Desktop", "危险指令"),
         ("shutdown -h now", "危险指令"),
+        ("shutdown /s /f /t 0", "危险指令"),
         ("format c:", "危险指令"),
         ("dd if=/dev/zero of=/dev/sda", "危险指令"),
         ("mkfs.ext4 /dev/sdb1", "危险指令"),
@@ -277,6 +278,10 @@ class TestSandboxGuard:
         ("Stop-Computer -Force", "危险指令"),
         ("Restart-Computer", "危险指令"),
         ("Remove-Item -Recurse -Force C:\\", "危险指令"),
+        ("del /f /s /q C:\\*", "危险指令"),
+        ("rd /s /q C:\\Windows\\System32", "危险指令"),
+        ("diskpart /s clear.script", "危险指令"),
+        ("reg delete HKLM\\SOFTWARE /f", "危险指令"),
     ])
     def test_dangerous_cmd_blocked(self, cmd, keyword):
         result = self._call(cmd)
@@ -287,6 +292,29 @@ class TestSandboxGuard:
         result = self._call("echo miniyu")
         # 全自动档无确认门 → 应真实执行成功，说明硬拦截只针对危险指令
         assert result.get("success") is True, result
+
+    def test_no_coordinator_still_blocks_dangerous(self):
+        """coordinator.enabled=False 时高危指令也必须硬拦截（回归：任何档位都不得放行）"""
+        import tempfile
+        tmpdir = tempfile.mkdtemp(prefix="miniyu_test_sb3_")
+        try:
+            agent = Agent(
+                config={
+                    "llm": {"provider": "deterministic"},
+                    "agent": {"max_steps": 15, "confirm_high_risk": False,
+                              "coordinator": {"enabled": False}},
+                    "memory": {"storage_dir": tmpdir},
+                },
+                confirm_handler=None,
+            )
+            assert agent.coordinator is None
+            for cmd in ("rm -rf /", "shutdown -h now", "format c:", "Stop-Computer -Force"):
+                result = agent._execute_one("run_command", {"cmd": cmd})
+                assert result["success"] is False, cmd
+                assert "危险指令" in result["error"], cmd
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_no_coordinator_keeps_old_behavior(self):
         import tempfile
