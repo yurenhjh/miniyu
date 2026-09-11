@@ -1120,20 +1120,27 @@ function initVoice() {
   };
   recognition.onend = stopVoiceUI;
   recognition.onerror = (err) => {
+    // 'aborted' = 用户主动点 🎤 关闭 / 页面切换等正常中止，不打扰
+    const isSilent = err.error === 'aborted';
     stopVoiceUI();
+    // 已识别的具体错误给明确指引；未列出类型（service-not-allowed / language-not-supported
+    // / insecure-context 等）用兜底文案，绝不让失败"静默无提示"
     const msg = ({
       'not-allowed': '麦克风权限被拒绝：请点浏览器地址栏左侧的 🔒 图标，允许麦克风后重试',
       'no-speech': '没听到声音：点击 🎤 后请靠近麦克风说话',
       'network': '浏览器语音服务不可用（语音识别依赖云端服务）：请检查网络，或换 Edge 浏览器，或直接文字输入',
       'audio-capture': '找不到可用的麦克风设备',
-    })[err.error];
-    if (msg) showToast(msg, false);
+      'service-not-allowed': '浏览器语音服务不可用：请检查网络，或换 Edge 浏览器（Chrome 走谷歌服务大陆常连不上）',
+      'language-not-supported': '当前浏览器不支持中文语音识别：请换 Edge 或 Chrome 浏览器',
+    })[err.error] || `语音识别失败（${err.error || '未知原因'}）：请点 🎤 重试或改用文字输入`;
+    if (!isSilent) showToast(msg, false);
   };
   mic.style.display = 'flex';
 }
 
 function toggleVoice() {
-  if (!recognition || listening) { if (recognition) recognition.stop(); return; }
+  if (!recognition) return;
+  if (listening) { stopListening(true); return; }   // 正在倾听 → 立即关闭
   const input = document.getElementById('input');
   _voiceBase = input.value;   // 保留已有内容（含上次语音结果/手动打字），识别结果追加其后
   input.placeholder = '🎤 正在倾听，请说话…（停顿不结束，点击 🎤 关闭）';
@@ -1143,6 +1150,27 @@ function toggleVoice() {
   mic.title = '正在倾听…（点击关闭）';
   try { recognition.start(); }
   catch (e) { showToast('语音识别启动失败，请重试或改用文字输入', false); stopVoiceUI(); }
+}
+
+function stopListening(force) {
+  // force=true（用户主动点 🎤 关闭）：用 abort()【立即】中止。continuous 模式下 stop()
+  // 是"优雅停止"——会等当前这一句定稿(final) 才触发 onend；若引擎迟迟不定稿
+  // （语音显示慢时正是这种状态），stop() 会被无限拖延 → 表现为"点关闭关不掉"。
+  // abort() 立即结束，并触发 onerror('aborted')+onend → stopVoiceUI() 复位 UI；
+  // 已识别进输入框的文字是实时写入的，abort 不会丢。stop/abort 都包 try/catch，
+  // 避免异常把 UI 永久卡在"倾听中"。
+  try {
+    if (recognition) {
+      if (force === true) {
+        recognition.abort();
+        // 兜底：个别引擎 abort() 后可能不长 onend，若仍未复位则强制复位 UI（幂等）。
+        // 正常路径 onend 已把 listening 置 false，这里的检查会短路跳过。
+        setTimeout(() => { if (listening) stopVoiceUI(); }, 300);
+      } else {
+        recognition.stop();
+      }
+    }
+  } catch (_) { stopVoiceUI(); }
 }
 
 function stopVoiceUI() {
