@@ -356,6 +356,13 @@ class BrowserController:
         self._user_data_dir = None
         self._temp_user_data_dir = True  # True=临时档案（close 时删除）；False=持久档案（保留登录态）
 
+        # P2-3 Target Handle 层：模型只拿短 handle（e1/e2…），内部才映射长 internal ref。
+        # handle 绑定当前 observation/session（页面导航或 DOM 明显变化即失效，须重新 find/snapshot）。
+        self._handle_seq = 0            # 全局递增，保证跨 session 不撞号
+        self._handle_registry = {}      # handle -> {"ref": 长internal_ref, "sid": session_id, "sig": 页面指纹}
+        self._activity_sid = 0          # 当前活动 session 号
+        self._page_sig = None           # (url, dom_sig)，用于判断页面是否变化新建 session
+
     # =====================================================
     # 连接生命周期
     # =====================================================
@@ -515,10 +522,69 @@ class BrowserController:
         time.sleep(1.0)
         return {"url": url, "title": self._evaluate("document.title")}
 
+    # =====================================================
+    # P2-3 Target Handle 层：短 handle ↔ 长 internal ref ↔ 当前页面 session
+    # =====================================================
+
+    def _read_page_sig(self):
+        """读取当前页面的轻量指纹 (url, dom_sig)；读不到时返回 None（无法判定变化）。"""
+        try:
+            url = self._evaluate("location.href") or ""
+        except Exception:
+            url = ""
+        try:
+            sig = self._dom_sig()
+        except Exception:
+            sig = None
+        if url == "" and sig is None:
+            return None
+        return (url, sig)
+
+    def _alloc_handles(self, items):
+        """为元素清单（list[dict]，含 ref）分配短 handle 并登记到 registry；返回附了 handle 的清单。
+
+        页面指纹与最近一次采样不同 → 新建 session，旧 handle 全部失效（由 _handle_to_ref 拒绝）。
+        每个元素都带稳定内部 ref 时才会分配；无 ref 的条目原样保留。
+        """
+        sig = self._read_page_sig()
+        if sig is not None and sig != self._page_sig:
+            self._activity_sid += 1
+            self._page_sig = sig
+        for it in items:
+            if not isinstance(it, dict) or not it.get("ref"):
+                continue
+            internal_ref = it["ref"]
+            if not any(r["ref"] == internal_ref and r["sid"] == self._activity_sid
+                       for r in self._handle_registry.values()):
+                self._handle_seq += 1
+                handle = f"e{self._handle_seq}"
+                it["handle"] = handle
+                self._handle_registry[handle] = {
+                    "ref": internal_ref, "sid": self._activity_sid, "sig": sig}
+        return items
+
+    def _handle_to_ref(self, target):
+        """把短 handle 解析成其登记的 internal ref；不是 handle 或已失效返回 None。
+
+        失效判定：页面指纹与 handle 登记时不一致 → stale（页面已导航/变化），
+        必须重新 find/snapshot/inspect 拿新 handle。
+        """
+        if not isinstance(target, str) or target not in self._handle_registry:
+            return None
+        entry = self._handle_registry[target]
+        cur = self._read_page_sig()
+        if cur is None:
+            ok = entry["sid"] == self._activity_sid
+        else:
+            ok = cur == entry["sig"]
+        return entry["ref"] if ok else None
+
     def snapshot(self):
-        """提取可交互元素索引清单（见模块 _SNAPSHOT_JS）"""
+        """提取可交互元素索引清单（见模块 _SNAPSHOT_JS）。每条带 ref 时附加短 handle，供模型首选。"""
         items = self._evaluate(_SNAPSHOT_JS)
-        return items if items is not None else []
+        if not isinstance(items, list):
+            return []
+        return self._alloc_handles([dict(x) for x in items])
 
     def find(self, text=None, role=None, tag=None, selector=None, max_results=20):
         """按目标文字/名称/角色/标签局部搜索元素（browser_find，Level 1）。
@@ -553,6 +619,7 @@ class BrowserController:
                 if not (x.get("input_kind") == "hidden-input")
                 and not (x.get("input_kind") == "semantic-textbox" and not x.get("editable"))
             ]
+        items = self._alloc_handles(items)
         return items[:max(1, min(int(max_results or 20), 100))]
 
     def click(self, target=None, index=None, selector=None, x=None, y=None):
@@ -579,8 +646,12 @@ class BrowserController:
                         f"SoM 会话已失效（页面可能已导航/变化），编号 {som} 无法使用，"
                         f"请重新调用 browser_inspect 后再点击")
                 ref = tgt.ref
+                method = "som"
             elif is_ref(target):
-                ref = target
+                # 短 handle 优先解析成内部 ref；非 handle 的（如旧式长 ref）保持向后兼容直用
+                h = self._handle_to_ref(target)
+                ref = h or target
+                method = "handle" if h else "dom"
             else:
                 # 其余视为 CSS 选择器（兼容 'css:...' 前缀）
                 return self._click_legacy(None, target.lstrip("css:"))
@@ -590,7 +661,7 @@ class BrowserController:
                     f"目标 {ref} 已不在页面中（可能导航或重排），请重新 browser_inspect")
             dpr = self._dpr()
             return dict(self.mouse_click(int(center[0] * dpr), int(center[1] * dpr)),
-                        ref=ref, method="som")
+                        ref=ref, method=method)
         return self._click_legacy(index, selector)
 
     def _click_legacy(self, index=None, selector=None):
@@ -619,7 +690,8 @@ class BrowserController:
                         f"SoM 会话已失效，编号 {som} 无法使用，请重新 browser_inspect")
                 ref = tgt.ref
             elif is_ref(target):
-                ref = target
+                # 短 handle 优先解析成内部 ref；旧式长 ref 保持向后兼容直用
+                ref = self._handle_to_ref(target) or target
             else:
                 return self._type_legacy(text, None, target.lstrip("css:"))
             return self._type_by_ref(text, ref)
@@ -853,7 +925,7 @@ class BrowserController:
             "url": url,
             "title": title,
             "dpr": dpr,
-            "elements": [t.to_dict() for t in targets],
+            "elements": self._alloc_handles([t.to_dict() for t in targets]),
         }
 
     def _dom_sig(self) -> str:

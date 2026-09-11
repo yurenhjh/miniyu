@@ -56,6 +56,22 @@ def is_som(target) -> bool:
     return parse_som(target) is not None
 
 
+# 结构路径段（DOM 结构路径型 stableId 的特征段，如 ebody:0_div:0_main:...）
+_PATH_SEG_RE = re.compile(r"(?:body|div|span|main|nav|section|ul|li|form|p|button)\d*:")
+
+
+def is_long_internal_ref(target) -> bool:
+    """判断是否"长路径型内部 DOM ref"（P2-3 禁止模型复制的目标）。
+
+    形如 `ebody:0_div:0_main:0_div:...` 的结构路径签名——正是豆包 E2E 里因被模型
+    复刻丢尾字符而出错的类型。短语义 ref（如 `eid:tbox` / `e17`）不在此列，保留
+    向后兼容。命中时应改用浏览器返回的短 handle（e1/e2…）。
+    """
+    if not isinstance(target, str) or not is_ref(target):
+        return False
+    return len(target) > 12 and _PATH_SEG_RE.search(target) is not None
+
+
 def css_center(bbox: Optional[List[float]]) -> Optional[List[float]]:
     """由 bbox [x, y, w, h] 求 CSS 中心 [cx, cy]。"""
     if not bbox or len(bbox) < 4:

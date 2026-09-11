@@ -153,6 +153,13 @@ SYSTEM_PROMPT = (
     "空间重叠、无 DOM 语义）时才允许 browser_inspect。SoM 编号只用于『som:N 编号失效』，结构 ref 用于『查找/输入"
     "目标』，两者不得混用——避免出现 stale ref → inspect → 误点 → 弹窗 → 再 inspect → 再 find 的死循环式长恢复链"
     "浪费大量 token。目标不可编辑时放弃输入，不要反复尝试同一个不可编辑目标。\n"
+    "16. 【Target Handle：用短句柄，别复制长 ref】browser_snapshot / browser_find / browser_inspect 返回的每条"
+    "元素都带一个短 handle（形如 e3），它是当前页面状态下的**短生命周期引用**。点击/输入一律优先用这个 handle："
+    "browser_click(target='e3') / browser_type(target='e3', text=...)。只能使用最近一次工具返回的 handle，**不得"
+    "猜测、修改、拼凑或自行构造 handle，也不得把内部长 ref（如 ebody:0_div:0_main:... 这类结构路径型）直接复制成"
+    "target**——长 ref 是给程序内部定位用的，模型复制极易丢字符导致点错目标；若误传长路径型 ref，工具会拒绝并提示。"
+    "页面导航 / 刷新 / DOM 明显变化后，旧 handle 会失效（工具报 stale / 目标不存在），此时重新 browser_find 或 "
+    "browser_snapshot 拿最新的 handle，不要复用旧 handle 或硬猜。\n"
 )
 
 # 服务端联网搜索（百炼 enable_search）生效时追加到 system prompt，显式覆盖守则第 9 条：

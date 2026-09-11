@@ -1849,19 +1849,24 @@ class ToolRegistry:
 
     def browser_click(self, target=None, index=None, selector=None, x=None, y=None):
         """
-        点击元素（统一目标体系，DOM-SoM-坐标混合架构）。四种定位任选其一：
+        点击元素（统一目标体系，DOM-SoM-坐标混合架构）。定位任选其一：
 
-        A. target='ref'：按稳定元素 ref 点击（browser_inspect 返回的 ref / e17 / f1e17）。
+        A. target=handle：用最近一次 browser_snapshot/find/inspect 返回的**短 handle**
+           （如 e3）点击（首选，杜绝复制长 ref 出错）。
         B. target='som:N'：按 browser_inspect 带编号截图上的视觉编号 N 点击
-           （内部自动 num→ref→实时定位→真实鼠标点击中心，会话失效会明确报错）。
-        C. index=browser_snapshot 的元素下标 / selector=CSS 选择器 → DOM 语义点击。
-        D. x, y = 最近一次 browser_screenshot 截图上的【图片像素】坐标 → CDP 真实鼠标点击。
-           **当输入框是 contenteditable（如豆包聊天框）、或普通点击"点了没反应"时，
-           先截图再用 x/y 真实点一下聚焦，再 browser_type 输入、browser_press_enter 发送。**
-
-        返回会自动附带客观验证字段：url_changed / page_changed（P5 客观状态检查，
-        不做 AI 语义判断。页面变化判断基于 URL 与 DOM 指纹——见方案第 24 节）。
+           （内部自动 num→handle→实时定位→真实鼠标点击中心，会话失效会明确报错）。
+        C. target=旧式 ref（如 eid:xxx）/ index=browser_snapshot 下标 / selector=CSS 选择器 → 点击。
+           **禁止传长路径型内部 ref（ebody:0_div:...）**——它是给程序内部用的，模型直接复制
+           极易丢字符，改用 handle。返回会自动附带客观验证字段：url_changed / page_changed
+           （P5 客观状态检查，不做 AI 语义判断）。clicked=true 只表示"已执行点击事件"，不等于
+           点中了正确目标（verified 需结合页面状态人工/后续校验）。
         """
+        from core.uitarget import is_long_internal_ref
+        if target is not None and is_long_internal_ref(target):
+            raise LookupError(
+                "目标为长路径型内部 ref（ebody:0_div:...），模型直接复制易丢字符失效。"
+                "请改用最新一次 browser_find / browser_snapshot / browser_inspect 返回的短 handle"
+                "（如 e3）作为 target，不要复制长 ref。")
         def _state():
             try:
                 return {
@@ -1876,6 +1881,7 @@ class ToolRegistry:
         if before and after:
             ret["url_changed"] = before["url"] != after["url"]
             ret["page_changed"] = before["sig"] != after["sig"]
+        ret.setdefault("verified", False)   # 执行事件 ≠ 确认命中正确目标
         return ret
 
     def browser_type(self, text, target=None, index=None, selector=None, press_enter=False):
@@ -1884,7 +1890,9 @@ class ToolRegistry:
 
         参数：
             text:          要输入的文本
-            target:        统一目标：ref / 'som:N'（browser_inspect 带编号截图上的编号）。
+            target:        统一目标：**短 handle（browser_find/snapshot/inspect 返回，如 e3）。
+                          首选**；或 'som:N'（browser_inspect 带编号）。禁止传长路径型内部
+                           ref（ebody:0_div:...），请用 handle。
             index:         browser_snapshot 返回的元素下标（与 target 二选一）
             selector:      CSS 选择器（与 target 二选一）
             press_enter:   输入完成后是否立即按回车键（用于提交表单/发送消息，如豆包聊天框默认回车发送），默认 False。
@@ -1894,6 +1902,12 @@ class ToolRegistry:
              "enter_pressed": press_enter}   # 仅表示"已按回车"，不代表消息已发出
             （发送是否成功以 browser_read_text / 页面状态客观校验为准）
         """
+        from core.uitarget import is_long_internal_ref
+        if target is not None and is_long_internal_ref(target):
+            raise LookupError(
+                "目标为长路径型内部 ref（ebody:0_div:...），模型直接复制易丢字符失效。"
+                "请改用最新一次 browser_find / browser_snapshot / browser_inspect 返回的短 handle"
+                "（如 e3）作为 target，不要复制长 ref。")
         ret = self.browser.type_text(text, target=target, index=index, selector=selector)
         if press_enter:
             self.browser.press_enter()
