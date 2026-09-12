@@ -153,7 +153,7 @@ recovery_depth = 完成任务中，首次 / 每次 action failure 之后额外�
 
 **本轮已完成**
 - ✅ `core/benchmark.py`：`recovery_depth`(v1) + `recovery_steps` + `recovery_depth_is_heuristic_v1`，同步 `format_summary`。
-- ✅ `tests/test_recovery_depth.py`：10 例边界单测。
+- ✅ `tests/test_recovery_depth.py`：9 例边界单测（全量 672 → 681，净增 9）。
 - ✅ 本地 demo 雏形：`examples/browser_benchmark/static.html`、`dynamic.html`（仅页面 + 确定性 mock，未接 Agent 跑真实任务）。
 
 **本轮明确禁止（P2-6 冻结保护）**
@@ -177,4 +177,5 @@ Phase 2  真实执行 A1 Local Static → A2 Local Dynamic → C 豆包 Regressi
 - `tests/test_recovery_depth.py`（新增）：recovery_depth 单测
 - `examples/browser_benchmark/static.html`（新增）：A1 静态 demo
 - `examples/browser_benchmark/dynamic.html`（新增）：A2 动态 demo
+- `examples/browser_benchmark/run_a1.py`（新增）：A1 一次性 driver（起本地静态服务 → 跑真实 Agent → 聚合 run_log → 客观判定 task_success）
 - `docs/P2-7-跨页面-Benchmark-设计.md`（本文档）
