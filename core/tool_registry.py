@@ -1995,6 +1995,15 @@ class ToolRegistry:
         返回：
             {"matched": "selector"/"text", ...}
         """
+        if not selector and not text:
+            # 无条件等待没有意义：没有可观察的等待条件，只会白白等到超时。
+            # 直接拒绝，省掉 10~15 秒空等和后续一轮 LLM 推理。
+            return {
+                "success": False,
+                "error": "browser_wait 需要 selector 或 text 至少其一作为等待条件，"
+                         "不能无条件等待。请先 browser_find / browser_snapshot 拿到目标，"
+                         "再指定 selector 或 text。",
+            }
         try:
             timeout = float(timeout)
         except (TypeError, ValueError):

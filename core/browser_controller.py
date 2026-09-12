@@ -340,7 +340,10 @@ def _build_find_js(text, role, tag, only_selector, limit):
       input_kind: inputKind(use),
       visible: visibleOf(use),
       disabled: use.disabled === true,
-      edit_host: use !== el,
+      // P2-4.1：edit_host 表示"该元素是否就是真正的输入宿主"（自身或下钻皆算）。
+      // host_kind 区分是自身（self）还是 wrapper 内部下钻（descendant）；无宿主为 null。
+      edit_host: !!host,
+      host_kind: host ? (use === el ? 'self' : 'descendant') : null,
       in_viewport: r.width > 2 && r.height > 2 &&
         r.bottom >= 0 && r.top <= window.innerHeight &&
         r.right >= 0 && r.left <= window.innerWidth,
@@ -355,6 +358,21 @@ def _build_find_js(text, role, tag, only_selector, limit):
         "selector": _json.dumps(only_selector or None),
         "limit": max(1, min(int(limit or 20), 100)),
     }
+
+
+def _front_handle(item):
+    """把 dict 的 handle 提到最前，返回新 dict（不原地改动）。
+
+    handle 是给模型用的短句柄，必须出现在结果最前面；超长内部 ref 落到后面，
+    即使日志截断也只会切掉 ref/尾部字段，而不会把 handle 吞掉。
+    """
+    if not isinstance(item, dict) or "handle" not in item:
+        return item
+    d = {"handle": item["handle"]}
+    for k, v in item.items():
+        if k != "handle":
+            d[k] = v
+    return d
 
 
 def _target_key(t):
@@ -618,14 +636,22 @@ class BrowserController:
             if not isinstance(it, dict) or not it.get("ref"):
                 continue
             internal_ref = it["ref"]
-            if not any(r["ref"] == internal_ref and r["sid"] == self._activity_sid
-                       for r in self._handle_registry.values()):
+            existing = next(
+                (h for h, r in self._handle_registry.items()
+                 if r["ref"] == internal_ref and r["sid"] == self._activity_sid),
+                None)
+            if existing is None:
                 self._handle_seq += 1
                 handle = f"e{self._handle_seq}"
-                it["handle"] = handle
                 self._handle_registry[handle] = {
                     "ref": internal_ref, "sid": self._activity_sid, "sig": sig}
-        return items
+            else:
+                # 同一会话内该 ref 已登记过（如 snapshot 先登记、find 再命中）：
+                # 必须把既有 handle 回填，否则模型拿不到可用 handle，会绕回 selector 旧路。
+                handle = existing
+            it["handle"] = handle
+        # 让 handle 恒排最前：模型优先看到短句柄，超长内部 ref 落在后面，不会被截断吞掉。
+        return [_front_handle(it) for it in items]
 
     def _handle_to_ref(self, target):
         """把短 handle 解析成其登记的 internal ref；不是 handle 或已失效返回 None。
