@@ -902,6 +902,25 @@ python -m pytest tests/test_agent_read_web.py -v
 - ✅ **整体系统集成** — 第 5 组协调层（审计+RAG）接入 Agent + 设计书 6 个演示场景 Web 实测全通
 - ✅ **最终报告与PPT** — 调研报告 3988 字（PDF 宋体小四）+ 汇报 PPT（18 页）+ 检查点 1~4 全部文档齐全
 
+### Browser Agent Core 演进（P1→P2-6，2026-09-13 冻结）
+
+确定性 Browser Workflow 分层（每组独立 commit 可回溯）：
+- **P1 观测成本控制** — 历史图片裁剪 + 结构化动作免自动截图 + System Prompt 第 14 条
+- **P2-3 Target Handle** — SoM 数字易漂移，改用 CDP `backendNodeId` 稳定的短句柄（e1/e2/e3）
+- **P2-4 Edit Host Resolution** — contenteditable/semantic wrapper 下钻到真实可输入节点
+- **P2-5 Semantic Observation & Wait** — DOM 锚 + semantic_blocks(content/control) + `wait_for_change` + 结构化 message_delta + 推荐 chips 过滤
+- **P2-6 Agent Integration** — 两个高层语义工具（`wait_for_change`/`read_latest_reply`）转 Agent 侧，验证语义 C（evidence quality 而非工具名）
+
+真实豆包 E2E 冻结基线 **Browser Agent Core v1**：
+```
+LLM calls = 6 · run_total_tokens = 84,031 · benchmark_valid = true
+task_success = true · verified_success = true
+verification_source = structured_read · verification_path = wait_delta
+调用链：find → type(handle,enter) → wait_for_change() → 复用结构化 delta → final（零恢复/零 selector/零 SoM）
+```
+从最差 38 回合 / 790,014 tokens / 无限恢复循环 → 6 回合 / 84,031 tokens / 单次确定性 browser workflow（**Recovery-driven → Deterministic**）。
+全量单测 **672 passed**。详见 `docs/P2-6-E2E-Benchmark-Report.md`。下一阶段：最小三类跨页面 benchmark（静态/动态/聊天流式）+ `recovery_depth` 指标。
+
 ---
 
 # 13. 技术特点

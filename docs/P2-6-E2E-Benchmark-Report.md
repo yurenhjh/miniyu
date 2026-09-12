@@ -129,6 +129,46 @@ benchmark_valid  := sum(recorded per-call total_tokens) == run_total_tokens
 
 ---
 
+## 七、gtp 最终验收 · Browser Agent Core v1 冻结 · 下一阶段
+
+> gtp 对本轮处理「基本全部认可」，三条线（功能 / 验证语义 / 账目一致性）全部闭环，P2-6 **正式封板**。
+
+### 7.1 Browser Agent Core v1（阶段性冻结点）
+P1 Observation Cost Control + P2-3 Target Handle + P2-4 Edit Host Resolution + P2-5 Semantic Observation & Wait + P2-6 Agent Integration。
+
+冻结基线（后续所有优化都以它作比较基准）：
+```
+LLM calls                  = 6
+run_total_tokens           = 84,031
+benchmark_valid            = true
+task_success               = true
+verified_success           = true
+verification_source        = structured_read
+verification_path          = wait_delta
+```
+调用链：`browser_find → browser_type(handle, press_enter=true) → browser_wait_for_change() → 直接复用结构化 message_delta → final`
+（无 selector fallback / 无 SoM / 无 inspect recovery loop / 无重复 read）。
+
+### 7.2 gtp 认可的关键设计
+- **验证语义 C 成立**：`verified_success` 看「最终回答有无可靠工具结构化证据」，而非「是否机械调用某工具」——这才是 benchmark 该测的东西。
+- **`wait_delta` 优于强制 `latest_reply`**：wait 已返回经 anchor/semantic_blocks/control 过滤/dedup 的语义增量，Agent 直接复用完全合理；再强制 read 是「为 benchmark 浪费工具调用」，本版规避了反向激励。
+- **evidence 自声明优于工具名 if 判断**：`evidence:{source:semantic_delta, verified:true}` 让 benchmark 按 evidence quality 分级（未来可扩展 `targeted_dom_read / accessibility_text / vision_observation`），比 `if tool_name == ...` 成熟得多。
+- **成本表述更严谨**：从 790,014→84,031（约 −89.4%）是结果之一；更该写「从 38 个有效 LLM 回合降到 6 个、从数十轮恢复循环变为单次确定性 browser workflow」——真正的架构提升是 **Recovery-driven → Deterministic browser execution**。
+- **记账修复正确**：`run_total := final_cum − initial_cum`，非「把 10445 当异常减掉」；第三轮 `initial=0/final=84,031/sum=84,031` → `benchmark_valid=true`，有资格作冻结基线。
+
+### 7.3 P2-6 冻结（不改）
+不改 wait / semantic delta / verification / benchmark accounting / prompt；不加 SoM / image 优化 / history 压缩 / 更多 Browser tools。
+
+### 7.4 下一阶段（已批复）
+最小三类跨页面 benchmark，验证 P2-5/P2-6 是**通用 Browser Agent 能力**而非豆包特化：
+- **A 静态页面**：打开→find→click→read（验证普通 DOM/handle 路径）。
+- **B 动态页面**：点击查询→等待结果变化→read result（验证 Anchor/Wait/Delta，不涉聊天语义）。
+- **C 聊天/流式页面**：即豆包（send→wait→delta→answer，验证完整 pipeline）。
+
+下一版 benchmark schema 增量（按优先级）：①`recovery_depth`＝完成任务首次失败后额外产生的 LLM action rounds（0=一次通过），比 action_failures 更接近最初 790k 爆炸根因；②验证拆 `task_success / verified_success / evidence_quality`。
+
+---
+
 ## 附：涉及文件与提交
 - `core/agent.py`：run 初始 cum 捕获 + run_start 头行 + 一致性判定（`9dc703f`）
 - `core/benchmark.py`：账目规则（`9dc703f`）；验证语义 C + wait_delta + verification_path + 截断稳健识别（`1a2b0fb`）

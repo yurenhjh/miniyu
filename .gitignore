@@ -18,6 +18,10 @@ test_output.txt
 # 分发/分享用模板 config.yaml.example（api_key 同样留空）。
 conversations/
 
+# ---- 浏览器 Agent benchmark 运行时产物（不入库） ----
+outputs/
+docs/run_logs/
+
 # ---- 演示脚手架 / 临时产物（不入库） ----
 demo_downloads/
 test.txt
