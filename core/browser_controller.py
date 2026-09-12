@@ -932,6 +932,274 @@ class BrowserController:
             time.sleep(0.3)
         raise TimeoutError(f"等待超时: selector={selector} text={text}")
 
+    # =====================================================
+    # P2-5 动态页面观察：结构锚 + semantic fingerprint + 状态变化等待 + semantic delta
+    # 设计约束（gtp 评审定稿）：
+    #   - message-list-* 只是“候选证据”，不是唯一长期锚；
+    #   - 禁止“最大可滚动 div”做主 fallback，改成候选评分；
+    #   - checksum 不是 hash innerText，而是排除时间/按钮/chips/CSS hash/几何 的 semantic fingerprint；
+    #   - 不假设“非 user = assistant”，先算 delta 再剔除噪音得到 assistant_candidate；
+    #   - 状态机 WAITING→STARTED→GENERATING→COMPLETED + 异常 ANCHOR_LOST/NO_CHANGE/TIMEOUT/LOADING_STUCK。
+    #   - 不做豆包专用工具；不依赖 LLM 猜 selector / SoM / inspect。
+    # =====================================================
+
+    _MESSAGE_ROOT_JS = r"""
+(() => {
+  const main = document.querySelector('main');
+  if (!main) return { error: 'no main', candidates: [] };
+  const wantUserText = __USER__;
+  const prevStem = __STEM__;
+  const out = [];
+  const seen = new Set();
+  const scan = (root) => {
+    if (!root || root.nodeType !== 1 || seen.has(root)) return;
+    seen.add(root);
+    if (root.offsetParent === null) return;
+    const r = root.getBoundingClientRect();
+    if (r.height < 240 || r.width < 200) return;
+    const cls = ((root.className || '') + '').replace(/\s+/g, ' ').slice(0, 90);
+    const lc = cls.toLowerCase();
+    const scrollable = root.scrollHeight > root.clientHeight + 2 || root.scrollWidth > root.clientWidth + 2;
+    let hasEdit = false, text = '';
+    for (const sel of ['textarea', 'input', '[contenteditable]']) {
+      if (root.querySelector(sel)) { hasEdit = true; break; }
+    }
+    try { text = (root.innerText || '').trim(); } catch (e) { text = ''; }
+    let score = 0;
+    if (/message[-_]?list/.test(lc)) score += 130;          // 语义 class 主证据（只是候选信号，非硬编码唯一锚）
+    else if (/conversation|session|thread|dialog|chatlog/.test(lc)) score += 50;
+    if (scrollable) score += 25;
+    if (hasEdit) score -= 60;                               // 含输入框 => 更像 composer
+    if (/composer|inputbox|input-area|send-msg-input/.test(lc)) score -= 60;
+    if (r.width < 260) score -= 80;                         // 过窄 => 侧栏/工具条
+    if (/conversation-item|sidebar|recent|history|chatsider/.test(lc)) score -= 70;   // 侧栏/最近会话
+    if (/recommend|suggestion|discover|explore|hot-slot|quick/.test(lc)) score -= 40; // 推荐区
+    const stem = (cls.trim().split(/\s+/).find(t => /[a-zA-Z]/.test(t)) || '');
+    if (prevStem && stem && stem.toLowerCase().startsWith(prevStem.toLowerCase())) score += 40; // 结构相似加分
+    if (wantUserText && text && text.includes(wantUserText)) score += 30;                       // 含已知 user 消息
+    // 可信判定：命中"会话区"语义 class 或含已知 user 消息文本 => reliable；
+    // 否则仅当在结构上确实像消息区(可滚动+高+文本足+非composer)且得分足够高才放行。
+    // 这样"落地态"只有泛大div时 => reliable=false => ANCHOR_LOST，而不是拿最大 div 兜底。
+    const strongCls = /message([-_]?list)?|conversation|session|thread|dialog|chatlog|messages/.test(lc);
+    const strongText = !!(wantUserText && text && text.includes(wantUserText));
+    const structural = scrollable && r.height >= 300 && text.length >= 40 && !hasEdit;
+    const reliable = !!(strongCls || strongText || (structural && score >= 100));
+    if (score > 0) out.push({ score, cls, stem, scrollable, textLen: text.length, reliable,
+                              rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] });
+    if (out.length < 80) {
+      for (const k of Array.from(root.children)) {
+        if (k.offsetParent !== null && k.getBoundingClientRect().height >= 200) scan(k);
+      }
+    }
+  };
+  scan(main);
+  const cands = out.sort((a, b) => b.score - a.score).slice(0, 8)
+    .map((c, i) => ({ score: c.score, rank: i, cls: c.cls, stem: c.stem, reliable: !!c.reliable,
+                      scrollable: c.scrollable, textLen: c.textLen, rect: c.rect }));
+  return { candidates: cands };
+})()
+"""
+
+    _PIN_ROOT_JS = r"""
+(() => { try { document.querySelectorAll('[data-miniyu-anchor]').forEach(e => e.removeAttribute('data-miniyu-anchor')); } catch(e) {}
+  const stem = __STEM__;
+  if (!stem) return false;
+  for (const el of Array.from(document.querySelectorAll('*'))) {
+    if (el.offsetParent === null) continue;
+    const c = ((el.className || '') + '').replace(/\s+/g, ' ');
+    if (c === stem || c.split(/\s+/).indexOf(stem) >= 0) {
+      el.setAttribute('data-miniyu-anchor', '1'); return true;
+    }
+  }
+  return false; })()
+"""
+
+    _SEMANTIC_STATE_JS = r"""
+(() => {
+  const root = document.querySelector('[data-miniyu-anchor]');
+  if (!root || root.offsetParent === null) return { error: 'anchor_lost' };
+  const raw = ((root.innerText || '') + '').replace(/\u00a0/g, ' ');
+  const lines = raw.split('\n').map(s => s.trim()).filter(Boolean);
+  const noise = (l) =>
+     /^\d{1,2}[:：]\d{2}/.test(l) ||                                // 11:56 / 12:08
+     /^(今天|昨天|明天|前天|晚上|上午|下午|早上)\s*\d{1,2}[:：]\d{2}/.test(l) ||
+     /^\d{4}[-/年]\d{1,2}([-/月]\d{1,2})?$/.test(l) ||             // 2026-09-12
+     /^\d{1,2}月\d{1,2}日$/.test(l);
+  const sem = lines.filter(l => !noise(l));
+  const s = sem.join('\n');
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) { h = ((h << 5) + h + s.charCodeAt(i)) | 0; }
+  let loading = false;
+  const busySel = '[class*="loading" i], [class*="streaming" i], [class*="generating" i], [aria-busy="true"]';
+  for (const el of Array.from(document.querySelectorAll(busySel))) {
+    if (el.offsetParent !== null && el.getBoundingClientRect().height > 0 && el.getBoundingClientRect().width > 0) {
+      loading = true; break;
+    }
+  }
+  return { fingerprint: (h >>> 0).toString(16), semantic_text: s,
+           sem_block_count: sem.length, loading: loading };
+})()
+"""
+
+    def discover_message_root(self, baseline_user_text=None):
+        """Phase B：正式 Observation Anchor —— 在 main 内做候选 conversation root 评分。
+
+        - message-list-* 仅是候选信号，绝不硬编码为唯一长期锚；
+        - ok 判定收口在方法内：仅当候选命中断言（reliable）才返回 ok=True 并 pin；
+        - 找不到可靠 conversation root => ok=False（上层即 ANCHOR_LOST），
+          绝不回退到“最大可滚动 div”掩盖问题；
+        - pin 通过 stem（structural signature）重定位元素，SPA 重渲染后可重新 discover。
+        """
+        if not hasattr(self, "_observation_anchor"):
+            self._observation_anchor = None
+        self._last_anchor_user = baseline_user_text if baseline_user_text else None
+        js = self._MESSAGE_ROOT_JS \
+            .replace("__USER__", json.dumps(baseline_user_text if baseline_user_text else None)) \
+            .replace("__STEM__", json.dumps(getattr(self, "_message_root_stem", None)))
+        try:
+            res = self._evaluate(js) or {}
+        except Exception as e:
+            return {"ok": False, "error": "scan:" + str(e)[:60]}
+        cands = res.get("candidates") or []
+        if not cands:
+            return {"ok": False, "error": res.get("error") or "no candidate"}
+        best = cands[0]
+        if not best.get("reliable"):
+            self._observation_anchor = None
+            return {"ok": False, "reliable": False, "best": best, "candidates": cands[:5],
+                    "error": "no reliable conversation anchor (best score=%s)" % best.get("score")}
+        if not best.get("stem"):
+            return {"ok": False, "reliable": True, "best": best, "candidates": cands[:5],
+                    "error": "reliable anchor lacks stable stem"}
+        self._message_root_stem = best.get("stem")
+        pinned = self._evaluate(self._PIN_ROOT_JS.replace(
+            "__STEM__", json.dumps(best.get("stem"))))
+        if not pinned:
+            return {"ok": False, "reliable": True, "best": best, "candidates": cands[:5],
+                    "error": "pin_failed"}
+        self._observation_anchor = {"stem": best.get("stem"), "score": best.get("score"),
+                                    "cls": best.get("cls"), "rect": best.get("rect"), "reliable": True}
+        return {"ok": True, "best": best, "candidates": cands[:5], "anchor": dict(self._observation_anchor)}
+
+    def _ensure_anchor(self):
+        """SPA 重渲染会抹掉 imperative 的 data-miniyu-anchor，读取前自愈：
+        (1) 锚尚在 → True；(2) 有 stem → 按 stem 重新 pin；(3) 仍失败 → 重新 discover。
+        全部失败返回 False，上层按 anchor_lost 处理。"""
+        try:
+            if self._evaluate("!!document.querySelector('[data-miniyu-anchor]')"):
+                return True
+        except Exception:
+            pass
+        stem = getattr(self, "_message_root_stem", None)
+        if stem:
+            try:
+                if self._evaluate(self._PIN_ROOT_JS.replace("__STEM__", json.dumps(stem))):
+                    return True
+            except Exception:
+                pass
+        try:
+            res = self.discover_message_root(getattr(self, "_last_anchor_user", None))
+            return bool(res.get("ok"))
+        except Exception:
+            return False
+
+    def semantic_state(self):
+        """Phase B：读取结构锚的 semantic fingerprint（排除时间/按钮/chips/几何），分离 loading。"""
+        try:
+            if not self._ensure_anchor():
+                return {"error": "anchor_lost"}
+            return self._evaluate(self._SEMANTIC_STATE_JS) or {"error": "empty"}
+        except Exception as e:
+            return {"error": "eval:" + str(e)[:60]}
+
+    def semantic_delta(self, baseline=None, current=None):
+        """Phase D：current.semantic_text 去掉 baseline 语义行与用户自己刚发的文本 = assistant_candidate。"""
+        current = current or self.semantic_state()
+        if not current or current.get("error"):
+            return ""
+        base_txt = (baseline or {}).get("semantic_text") or ""
+        bset = {x for x in base_txt.split("\n") if x}
+        user = ((baseline or {}).get("user_message_text") or "").strip()
+        out = [l for l in (current.get("semantic_text") or "").split("\n") if l and l not in bset]
+        if user:
+            out = [l for l in out if l != user]
+        return "\n".join(out)
+
+    def wait_for_changes(self, baseline=None, timeout=60.0, min_stable_rounds=2, interval=1.0, trace=None):
+        """Phase C：状态机等待“回复完成”。
+
+        文案与返回全部结构化，状态机：
+          WAITING → STARTED → GENERATING → COMPLETED
+          异常：ANCHOR_LOST / NO_CHANGE / TIMEOUT / LOADING_STUCK
+        完成 = delta_detected + loading 消失 + semantic fingerprint 稳定 min_stable_rounds 轮。
+        trace：可选回调，每轮轮询调用 trace({"tick", "state", "loading", "delta", "stable"})，
+               仅用于演示/调试，不影响判定。
+        """
+        baseline = baseline or {}
+        try:
+            timeout = float(timeout); min_stable_rounds = int(min_stable_rounds); interval = float(interval)
+        except Exception:
+            return {"success": False, "state": "TIMEOUT", "error": "param"}
+
+        # 确保锚存在（SPA 重渲染后结构重定位；真正的执行态取一票，error 态不算）
+        if not self._ensure_anchor():
+            return {"success": False, "state": "ANCHOR_LOST"}
+
+        base_fp = baseline.get("fingerprint") or (self.semantic_state() or {}).get("fingerprint")
+        t0 = time.monotonic()
+        started = False
+        state = "WAITING"
+        loading = False
+        last_fp = None
+        stable = 0
+        tick = 0
+
+        while True:
+            st = self.semantic_state()
+            if st.get("error") == "anchor_lost":
+                return {"success": False, "state": "ANCHOR_LOST",
+                        "started": started, "elapsed_ms": int((time.monotonic() - t0) * 1000)}
+            fp = st.get("fingerprint")
+            loading = bool(st.get("loading"))
+            delta = bool(fp) and fp != base_fp
+            if delta and not started:
+                started = True
+                state = "STARTED"
+            if started:
+                if loading:
+                    state = "GENERATING"
+                    stable = 0
+                else:
+                    if fp is not None and fp == last_fp:
+                        stable += 1
+                    else:
+                        stable = 0
+                    if stable >= min_stable_rounds:
+                        return {"success": True, "state": "COMPLETED", "started": started,
+                                "loading": False, "delta_detected": True,
+                                "elapsed_ms": int((time.monotonic() - t0) * 1000),
+                                "message_delta": self.semantic_delta(baseline, st),
+                                "fingerprint": fp}
+            last_fp = fp
+            tick += 1
+            if trace is not None:
+                try:
+                    trace({"tick": tick, "state": state, "loading": loading,
+                           "delta": bool(delta), "stable": stable})
+                except Exception:
+                    pass
+            if time.monotonic() - t0 > timeout:
+                if not started:
+                    return {"success": False, "state": "NO_CHANGE", "started": False,
+                            "loading": loading, "delta_detected": False,
+                            "elapsed_ms": int((time.monotonic() - t0) * 1000),
+                            "last_fingerprint": last_fp}
+                return {"success": False, "state": "LOADING_STUCK" if loading else "TIMEOUT",
+                        "started": started, "loading": loading, "delta_detected": True,
+                        "elapsed_ms": int((time.monotonic() - t0) * 1000),
+                        "last_fingerprint": last_fp}
+            time.sleep(interval)
+
     def press_enter(self):
         """向当前焦点元素发送回车键（用于提交表单 / 搜索）"""
         for event_type in ("keyDown", "keyUp"):

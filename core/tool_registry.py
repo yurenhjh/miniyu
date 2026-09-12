@@ -163,6 +163,7 @@ class ToolRegistry:
         self.register("browser_read_text", self.browser_read_text)
         self.register("browser_screenshot", self.browser_screenshot)
         self.register("browser_wait", self.browser_wait)
+        self.register("browser_wait_for_change", self.browser_wait_for_change)
         self.register("browser_refresh", self.browser_refresh)
         self.register("browser_bring_to_front", self.browser_bring_to_front)
         self.register("browser_inspect", self.browser_inspect)
@@ -2009,6 +2010,30 @@ class ToolRegistry:
         except (TypeError, ValueError):
             timeout = 10.0
         return self.browser.wait_for(selector=selector, text=text, timeout=timeout)
+
+    def browser_wait_for_change(self, baseline=None, timeout=60, min_stable_rounds=2, interval=1.0):
+        """
+        P2-5：状态机等待“消息回复完成”，不猜 selector / 不靠 SoM / 不需要 LLM re-plan。
+
+        内部记录结构锚（observation anchor），对锚做 semantic fingerprint（排除时间/按钮/chips/
+        几何），跟踪 WAITING→STARTED→GENERATING→COMPLETED；异常返回 ANCHOR_LOST / NO_CHANGE /
+        TIMEOUT / LOADING_STUCK，并给出结构化状态供 Agent 直接决策。
+
+        参数：
+            baseline:           发送前由语义观察得到的上下文（可含 user_message_text /
+                                 fingerprint / semantic_text）。传字符串 user_message_text 亦可。
+            timeout:            总超时秒数
+            min_stable_rounds:  语义指纹需连续稳定几轮才算完成（默认 2，不硬编码 3）
+            interval:           每轮轮询间隔秒数
+        返回：结构化状态（见 wait_for_changes）
+        """
+        try:
+            timeout = float(timeout); min_stable_rounds = int(min_stable_rounds); interval = float(interval)
+        except (TypeError, ValueError):
+            return {"success": False, "state": "TIMEOUT", "error": "param"}
+        bl = baseline if isinstance(baseline, dict) else {"user_message_text": baseline or None}
+        return self.browser.wait_for_changes(baseline=bl, timeout=timeout,
+                                             min_stable_rounds=min_stable_rounds, interval=interval)
 
     def browser_refresh(self, ignore_cache=True):
         """

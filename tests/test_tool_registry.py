@@ -46,7 +46,7 @@ class TestToolRegistry(unittest.TestCase):
         self.assertIn("browser_launch", tools)
         self.assertIn("browser_snapshot", tools)
         self.assertIn("click_at", tools)
-        self.assertEqual(len(tools), 63)   # 61 + browser_refresh/bring_to_front
+        self.assertEqual(len(tools), 64)   # 61 + browser_refresh/bring_to_front + browser_wait_for_change
 
     def test_unregister_tool(self):
         """测试注销工具"""
