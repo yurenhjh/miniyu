@@ -161,8 +161,8 @@ class TestAgentSkillExposure(unittest.TestCase):
             registry = agent.api.list_tools_openai()
             merged = registry + agent.api.list_skills_openai()
             names = [t["function"]["name"] for t in merged]
-        self.assertEqual(len(registry), 64)                 # registry：61 + browser_refresh/bring_to_front + wait_for_change
-        self.assertEqual(len(names), 69)
+        self.assertEqual(len(registry), 65)                 # registry：61 + browser_refresh/bring_to_front/wait_for_change/read_latest_reply
+        self.assertEqual(len(names), 70)      # 65 tools + 5 skills
         self.assertIn("app_send_message", names)
         self.assertIn("send_email", names)
         self.assertIn("read_qq_chat", names)

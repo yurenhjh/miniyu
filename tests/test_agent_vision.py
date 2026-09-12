@@ -269,7 +269,7 @@ class TestAgentVisionToolset(unittest.TestCase):
             agent = Agent(config=_cfg(storage))
             tools = agent._agent_openai_tools()
             names = [t["function"]["name"] for t in tools]
-            self.assertEqual(len(tools), 72)   # registry64 + 技能5 + screen_inspect/read_image/token_usage
+            self.assertEqual(len(tools), 73)   # registry65 + 技能5 + screen_inspect/read_image/token_usage
             self.assertIn("screen_inspect", names)
             self.assertIn("read_image", names)
             self.assertIn("app_send_message", names)

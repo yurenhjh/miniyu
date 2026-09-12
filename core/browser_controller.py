@@ -1246,6 +1246,46 @@ class BrowserController:
         """Phase D：纯 assistant 正文（content 块），不含推荐 chips/控件。"""
         return self.semantic_blocks(baseline=baseline)["assistant_reply"]
 
+    # ------------------------------------------------------------------
+    # P2-6 Agent Integration Layer：把已验证的 P2-5 能力透成 Agent 可调用、
+    # LLM 无需构造内部状态的语义接口。
+    # ------------------------------------------------------------------
+    def capture_wait_baseline(self, user_text=None):
+        """browser_type(..., press_enter=True) 发送成功后调用：把当前语义状态存为
+        pending baseline，供后续 wait_for_changes() 不带参数时消费。
+        user_text=发送文本，用于在 delta 里滤掉用户刚发的消息（即使捕获前它尚未渲染进 DOM）。
+
+        pending 属于 controller 内部状态，不暴露给 LLM。
+        """
+        base = self.semantic_baseline(user_message_text=user_text)
+        self._pending_wait_baseline = base
+        return {"captured": True, "pending": base is not None,
+                "sem_block_count": base.get("sem_block_count"),
+                "leaf_count": len(base.get("leaf_lines") or [])}
+
+    def read_latest_reply(self):
+        """通用语义读取：读取当前页面最新一条 assistant/response 正文（非豆包专用）。
+
+        内部按顺序复用：discover/_ensure_anchor → semantic_blocks → control 过滤 → dedup → read。
+        不把 message-list-*/CSS hash/semantic_blocks/DOM 结构暴露给 LLM。
+
+        返回：
+          {"success": True, "text": <正文>, "source": "structured_read", "pending": bool}
+          失败状态：ANCHOR_LOST / NO_PENDING_WAIT_BASELINE / EMPTY_REPLY。
+        """
+        if not self._ensure_anchor():
+            return {"success": False, "state": "ANCHOR_LOST"}
+        pending = getattr(self, "_pending_wait_baseline", None)
+        baseline = pending if pending is not None else {}
+        blocks = self.semantic_blocks(baseline=baseline).get("blocks", [])
+        contents = [b for b in blocks if b.get("kind") == "content"]
+        if not contents:
+            return {"success": False, "state": "NO_PENDING_WAIT_BASELINE" if pending is None
+                    else "EMPTY_REPLY", "anchor": True, "pending": pending is not None}
+        text = "\n".join(b["text"] for b in contents)
+        return {"success": True, "text": text, "source": "structured_read",
+                "pending": pending is not None, "block_count": len(contents)}
+
     def wait_for_changes(self, baseline=None, timeout=60.0, min_stable_rounds=2, interval=1.0, trace=None):
         """Phase C：状态机等待“回复完成”。
 
@@ -1255,8 +1295,20 @@ class BrowserController:
         完成 = delta_detected + loading 消失 + semantic fingerprint 稳定 min_stable_rounds 轮。
         trace：可选回调，每轮轮询调用 trace({"tick", "state", "loading", "delta", "stable"})，
                仅用于演示/调试，不影响判定。
+
+        P2-6：baseline 可省略 —— 若未提供（dict/None 均视为空），优先使用 chat 发送时
+        browser_type(press_enter) 自动捕获的 pending baseline；连 pending 都没有则返回
+        NO_PENDING_WAIT_BASELINE，绝不要求 LLM 构造 semantic baseline。
         """
         baseline = baseline or {}
+
+        # P2-6：空 baseline → 用发送时自动捕获的 pending；无 pending → 明确报错
+        if not baseline:
+            pending = getattr(self, "_pending_wait_baseline", None)
+            if pending is None:
+                return {"success": False, "state": "NO_PENDING_WAIT_BASELINE"}
+            baseline = dict(pending)
+
         try:
             timeout = float(timeout); min_stable_rounds = int(min_stable_rounds); interval = float(interval)
         except Exception:

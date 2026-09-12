@@ -164,6 +164,7 @@ class ToolRegistry:
         self.register("browser_screenshot", self.browser_screenshot)
         self.register("browser_wait", self.browser_wait)
         self.register("browser_wait_for_change", self.browser_wait_for_change)
+        self.register("browser_read_latest_reply", self.browser_read_latest_reply)
         self.register("browser_refresh", self.browser_refresh)
         self.register("browser_bring_to_front", self.browser_bring_to_front)
         self.register("browser_inspect", self.browser_inspect)
@@ -1912,7 +1913,14 @@ class ToolRegistry:
         ret = self.browser.type_text(text, target=target, index=index, selector=selector)
         if press_enter:
             self.browser.press_enter()
-        return {**ret, "enter_pressed": press_enter}
+            # P2-6：发送成功后自动捕获 pending baseline，接下来的 browser_wait_for_change()
+            # 无需 LLM 构造 baseline，内部直接消费这个 pending。wait_hint 告诉模型该用哪个等待工具。
+            try:
+                self.browser.capture_wait_baseline(text)
+            except Exception:
+                pass
+            return {**ret, "enter_pressed": True, "wait_hint": "browser_wait_for_change"}
+        return {**ret, "enter_pressed": False}
 
     def browser_read_text(self, selector=None):
         """
@@ -1986,15 +1994,19 @@ class ToolRegistry:
 
     def browser_wait(self, selector=None, text=None, timeout=10):
         """
-        等待某元素或文本出现（事件驱动式等待）
+        等待某元素或文本出现（事件驱动式等待）。**只用于等待已知 selector / 已知文本。**
+
+        · 动态页面的“回复/内容状态变化”（如发消息后等未知回复）请用 browser_wait_for_change()。
+        · browser_wait 需要明确的 selector 或 text 条件；无条件等待会被直接拒绝。
+          先 browser_find / browser_snapshot 拿到目标，再指定 selector 或 text。
 
         参数：
             selector: CSS 选择器（可选）
             text:     待出现的文字（可选）
             timeout:  超时秒数，默认 10；内部按数值处理（兼容字符串传参）
 
-        返回：
-            {"matched": "selector"/"text", ...}
+        返回:
+            {"matched": "selector"/"text", ...}；无条件的无意义等待返回错误
         """
         if not selector and not text:
             # 无条件等待没有意义：没有可观察的等待条件，只会白白等到超时。
@@ -2017,23 +2029,48 @@ class ToolRegistry:
 
         内部记录结构锚（observation anchor），对锚做 semantic fingerprint（排除时间/按钮/chips/
         几何），跟踪 WAITING→STARTED→GENERATING→COMPLETED；异常返回 ANCHOR_LOST / NO_CHANGE /
-        TIMEOUT / LOADING_STUCK，并给出结构化状态供 Agent 直接决策。
+        TIMEOUT / LOADING_STUCK / NO_PENDING_WAIT_BASELINE，并给出结构化状态供 Agent 直接决策。
+
+        P2-6：baseline 一般【无需传】。若它是在 browser_type(..., press_enter=True) 成功发送之后
+        调用，controller 已自动保存 pending baseline，本工具内部直接消费；此时 baseline 可省略或传
+        空字符串。只有需要跨步骤精确指定上下文时才传 dict。传字符串会被忽略并回退到 pending。
+        无 pending 时返回 NO_PENDING_WAIT_BASELINE（不要让模型猜 baseline / 构造 fingerprint）。
 
         参数：
-            baseline:           发送前由语义观察得到的上下文（可含 user_message_text /
-                                 fingerprint / semantic_text）。传字符串 user_message_text 亦可。
+            baseline:           （可选）结构化 baseline dict；省略/传非 dict 时自动用发送时捕获的 pending。
             timeout:            总超时秒数
-            min_stable_rounds:  语义指纹需连续稳定几轮才算完成（默认 2，不硬编码 3）
+            min_stable_rounds:  语义指纹需连续稳定几轮才算完成（默认 2）
             interval:           每轮轮询间隔秒数
-        返回：结构化状态（见 wait_for_changes）
+        返回：结构化状态（见 wait_for_changes）；完成时含 message_delta / message_blocks。
         """
         try:
             timeout = float(timeout); min_stable_rounds = int(min_stable_rounds); interval = float(interval)
         except (TypeError, ValueError):
             return {"success": False, "state": "TIMEOUT", "error": "param"}
-        bl = baseline if isinstance(baseline, dict) else {"user_message_text": baseline or None}
+        # P2-6：非 dict（含字符串/None）→ 交给 controller 的 pending；controller 无 pending 会返回
+        # NO_PENDING_WAIT_BASELINE。避免 LLM 把字符串当 user_message_text 或伪造 fingerprint。
+        bl = baseline if isinstance(baseline, dict) else None
         return self.browser.wait_for_changes(baseline=bl, timeout=timeout,
                                              min_stable_rounds=min_stable_rounds, interval=interval)
+
+    def browser_read_latest_reply(self):
+        """
+        读取当前页面中最近一条 assistant/response 回复正文（通用语义，非豆包专用）。
+
+        内部按顺序复用已真实验证过的 P2-5 能力：结构锚定位 → semantic blocks 分类 →
+        排除推荐 chips/控件(control) → 去重 → 只返回 assistant 正文(content)。
+        不把 message-list-*/CSS hash / semantic blocks / DOM 路径暴露给 LLM。
+
+        典型用法（配合 browser_type 自动捕获的 pending baseline）：
+            browser_type(..., press_enter=True) → browser_wait_for_change() → browser_read_latest_reply()
+
+        返回：
+            {"success": True, "text": <最新 assistant 回复>, "source": "structured_read"}
+            失败（不含正文/无法定位）：{"success": False, "state": "ANCHOR_LOST" |
+                                          "NO_PENDING_WAIT_BASELINE" | "EMPTY_REPLY"}
+        不要退化成 browser_read_text({}) 整页读取：本工具只返回结构化的 assistant 正文。
+        """
+        return self.browser.read_latest_reply()
 
     def browser_refresh(self, ignore_cache=True):
         """
