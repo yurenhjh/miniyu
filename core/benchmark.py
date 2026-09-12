@@ -126,6 +126,39 @@ def _wait_state(result_s, ok):
     return "failed"
 
 
+def _wait_delta_evidence(result_s, ok):
+    """browser_wait_for_change 是否返回了可信的『结构化 assistant delta』。
+
+    该 delta 与 browser_read_latest_reply 出自同一引擎（_ensure_anchor →
+    semantic_blocks → control/chip 过滤 → dedup），因此它本身就是结构化证据，
+    可支撑 verified_success，而无须再要求 Agent 显式重复读取。
+    判定不靠工具名猜测：需 ok 且 delta_detected 为真，且 message_delta（或
+    工具自声明的 evidence.source == semantic_delta）非空。
+    """
+    if not ok:
+        return False
+    # 注意：action.result 可能在工具层被截断为不完整 JSON（长 message_blocks 数组被
+    # 切断），不能依赖整体 json.loads。用头部标记做稳健识别。
+    if isinstance(result_s, dict):
+        ev = result_s.get("evidence")
+        if isinstance(ev, dict) and ev.get("source") == "semantic_delta":
+            return True
+        if result_s.get("delta_detected") and result_s.get("success"):
+            text = result_s.get("message_delta") or result_s.get("delta") or ""
+            return isinstance(text, str) and bool(text.strip())
+        return False
+    s = str(result_s or "")
+    if not s or not s.strip():
+        return False
+    if '"evidence"' in s and '"source"' in s and '"semantic_delta"' in s:
+        return True
+    if re.search(r'"success"\s*:\s*true', s) and re.search(r'"delta_detected"\s*:\s*true', s):
+        m = re.search(r'"message_delta"\s*:\s*"([^"]*)"', s)
+        if m and m.group(1).strip():
+            return True
+    return False
+
+
 def aggregate_run_log(path, task_success=None):
     """聚合一条 run_log，返回结构化 Benchmark 统计（dict）。
 
@@ -174,6 +207,7 @@ def aggregate_run_log(path, task_success=None):
     read_whole_page = 0
     read_structured_latest = 0
     read_ok = {"targeted": 0, "whole_page": 0, "structured_latest": 0}
+    wait_delta_ok = 0
     wait = {"wait_calls": 0, "completed": 0, "timeout": 0, "anchor_lost": 0,
             "loading_stuck": 0, "failed": 0, "elapsed_ms": 0}
     action_failures = 0
@@ -206,6 +240,8 @@ def aggregate_run_log(path, task_success=None):
                 wait["loading_stuck"] += 1
             else:
                 wait["failed"] += 1
+            if name == "browser_wait_for_change" and _wait_delta_evidence(a.get("result"), ok):
+                wait_delta_ok += 1
 
         is_click = name in _CLICK_TOOLS
         if name in _COORD_TOOLS or (is_click and (_has_any(args, ("x",)) and _has_any(args, ("y",)))):
@@ -228,17 +264,30 @@ def aggregate_run_log(path, task_success=None):
             if ok:
                 read_ok["structured_latest"] += 1
 
-    # ---- Verification source（P2-6 结构化读取最高优先） ----
+    # ---- Verification source & path（P2-6：结构化证据最高优先，且区分途径） ----
+    # verified_success 取决于『最终答案是否有可靠的工具结构化证据支撑』，
+    # 而非『是否调用了某个特定工具』。tool identity ≠ evidence quality。
+    verification_path = "unknown"
     if read_ok["structured_latest"] > 0:
+        # 显式调用 browser_read_latest_reply 的结构化读取
         verification_source = "structured_read"
+        verification_path = "latest_reply"
+    elif wait_delta_ok > 0:
+        # browser_wait_for_change 返回的语义 delta（与 read_latest_reply 同引擎）
+        verification_source = "structured_read"
+        verification_path = "wait_delta"
     elif read_ok["targeted"] > 0:
         verification_source = "structured_read"
+        verification_path = "read_targeted"
     elif read_ok["whole_page"] > 0:
         verification_source = "whole_page_read"
+        verification_path = "whole_page"
     elif tools.get("browser_inspect", {}).get("success", 0) > 0 or tools.get("browser_snapshot", {}).get("success", 0) > 0:
         verification_source = "vision"
+        verification_path = "vision"
     elif token["llm_calls"] > 0:
         verification_source = "model_inference"
+        verification_path = "model_inference"
     else:
         verification_source = "unknown"
 
@@ -268,6 +317,7 @@ def aggregate_run_log(path, task_success=None):
         "task_success": task_success,
         "verified_success": verified_success,
         "verification_source": verification_source,
+        "verification_path": verification_path,
         "llm_calls": token["llm_calls"],
         "total_tokens": token["total_tokens"],
         "prompt_tokens": token["prompt_tokens"],
@@ -289,6 +339,7 @@ def aggregate_run_log(path, task_success=None):
         "wait": wait["wait_calls"],
         "read": read_targeted + read_whole_page + read_structured_latest,
         "read_latest_reply": read_structured_latest,
+        "read_ok_wait_delta": wait_delta_ok,
         "inspect": tools.get("browser_inspect", {}).get("calls", 0),
         "som_screenshot": tools.get("browser_snapshot", {}).get("calls", 0),
         "selector_fallback": selector_fallback,
@@ -312,7 +363,7 @@ def aggregate_run_log(path, task_success=None):
 def format_summary(s):
     lines = []
     lines.append("==== Benchmark Summary ====")
-    flags = "{benchmark_valid} ts={task_success} vs={verified_success} src={verification_source}".format(**s)
+    flags = "{benchmark_valid} ts={task_success} vs={verified_success} src={verification_source} path={verification_path}".format(**s)
     lines.append(flags)
     if s.get("consistency_note"):
         lines.append("  note: " + s["consistency_note"])

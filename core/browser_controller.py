@@ -1354,7 +1354,9 @@ class BrowserController:
                                 "elapsed_ms": int((time.monotonic() - t0) * 1000),
                                 "message_delta": blocks["assistant_reply"],
                                 "message_blocks": blocks["blocks"],
-                                "fingerprint": fp}
+                                "fingerprint": fp,
+                                "evidence": {"source": "semantic_delta",
+                                             "verified": bool(blocks["assistant_reply"].strip())}}
             last_fp = fp
             tick += 1
             if trace is not None:

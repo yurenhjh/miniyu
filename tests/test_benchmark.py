@@ -205,6 +205,86 @@ class TestBenchmark(unittest.TestCase):
         self.assertTrue(s["verified_success"])
         self.assertEqual(s["wait_completed"], 1)
 
+    def test_wait_delta_is_structured_read(self):
+        """P2-6 C：browser_wait_for_change 返回结构化 message_delta → 也该 verified_success=true，
+        path=wait_delta。它与 read_latest_reply 同一引擎，不应判成 model_inference 误报。"""
+        rows = [
+            _llm(100, 10, 110, step=1),
+            _act("browser_wait_for_change", True, {},
+                 result='{"success":true,"state":"COMPLETED","delta_detected":true,'
+                        '"message_delta":"你好呀，有什么想聊的吗？"}', step=1),
+            _llm(100, 10, 220, step=2),
+        ]
+        p = _log(rows)
+        s = aggregate_run_log(p, task_success=True)
+        os.unlink(p)
+        self.assertEqual(s["read_ok_wait_delta"], 1)
+        self.assertEqual(s["verification_source"], "structured_read")
+        self.assertEqual(s["verification_path"], "wait_delta")
+        self.assertTrue(s["verified_success"])
+
+    def test_wait_evidence_self_declared_without_delta_text(self):
+        """P2-6 C：wait 以 evidence.source=semantic_delta 自声明（无 message_delta）也应识别。"""
+        rows = [
+            _llm(100, 10, 110, step=1),
+            _act("browser_wait_for_change", True, {},
+                 result='{"success":true,"evidence":{"source":"semantic_delta","verified":true}}', step=1),
+            _llm(100, 10, 220, step=2),
+        ]
+        p = _log(rows)
+        s = aggregate_run_log(p, task_success=True)
+        os.unlink(p)
+        self.assertEqual(s["verification_source"], "structured_read")
+        self.assertEqual(s["verification_path"], "wait_delta")
+        self.assertTrue(s["verified_success"])
+
+    def test_wait_no_delta_no_read_not_verified(self):
+        """P2-6 C：wait 完成但无结构化 delta、也无读取 → 退化为 model_inference（不判 verified）。"""
+        rows = [
+            _llm(100, 10, 110, step=1),
+            _act("browser_wait_for_change", True, {}, result="COMPLETED", step=1),
+            _llm(100, 10, 220, step=2),
+        ]
+        p = _log(rows)
+        s = aggregate_run_log(p, task_success=True)
+        os.unlink(p)
+        self.assertEqual(s["read_ok_wait_delta"], 0)
+        self.assertEqual(s["verification_source"], "model_inference")
+        self.assertEqual(s["verification_path"], "model_inference")
+        self.assertFalse(s["verified_success"])
+
+    def test_wait_delta_then_latest_reply_prefers_latest_reply(self):
+        """P2-6 C：同时有 wait_delta 与显式 read_latest_reply → 显式读取为更权威证据。"""
+        rows = [
+            _llm(100, 10, 110, step=1),
+            _act("browser_wait_for_change", True, {},
+                 result='{"success":true,"delta_detected":true,"message_delta":"你好"}', step=1),
+            _act("browser_read_latest_reply", True, {},
+                 result='{"success":true,"text":"你好","source":"structured_read"}', step=2),
+            _llm(100, 10, 230, step=2),
+        ]
+        p = _log(rows)
+        s = aggregate_run_log(p, task_success=True)
+        os.unlink(p)
+        self.assertEqual(s["verification_path"], "latest_reply")
+        self.assertTrue(s["verified_success"])
+
+    def test_wait_delta_beats_whole_page_read(self):
+        """P2-6 C：wait_delta（结构化）优先于整页读取（weak）。"""
+        rows = [
+            _llm(100, 10, 110, step=1),
+            _act("browser_wait_for_change", True, {},
+                 result='{"success":true,"delta_detected":true,"message_delta":"你好"}', step=1),
+            _act("browser_read_text", True, {}, result="整页文本", step=2),
+            _llm(100, 10, 230, step=2),
+        ]
+        p = _log(rows)
+        s = aggregate_run_log(p, task_success=True)
+        os.unlink(p)
+        self.assertEqual(s["verification_source"], "structured_read")
+        self.assertEqual(s["verification_path"], "wait_delta")
+        self.assertTrue(s["verified_success"])
+
     def test_empty_log(self):
         p = _log([])
         s = aggregate_run_log(p)
