@@ -875,8 +875,36 @@ class BrowserController:
         self._send("Input.insertText", {"text": text})
         return {"typed": text, "index": index, "selector": selector, "method": "dom"}
 
-    def read_text(self, selector=None):
-        """读取页面（或指定元素）的文本"""
+    def read_text(self, selector=None, target=None):
+        """读取页面（或指定元素）的文本。
+
+        - target=：P2-7 让 read 也消费 Target Handle——优先按短 handle/内部 ref 定位，
+          **拒绝把自然语言自猜的 CSS selector 当 target**（契约：find→handle→read 闭环）。
+        - selector=：显式按 CSS 选择器定位（旧式路径，向后兼容）。
+        - 两者皆空：读取整页正文。
+        解析优先级：target(handle) → target(ref) → selector → whole page。
+        """
+        from core.uitarget import is_ref
+        if target is not None:
+            h = self._handle_to_ref(target)
+            if h:
+                ref, method = h, "handle"
+            elif is_ref(target):
+                ref, method = target, "ref"
+            else:
+                raise LookupError(
+                    f"目标 {target!r} 不是有效 Target Handle/ref，不能作为读取定位。"
+                    "browser_find / browser_snapshot 返回的短 handle（如 e3）应传给 target=；"
+                    "不要根据自然语言目标自行猜测或构造 CSS selector。"
+                    "确需按选择器定位时，请显式用 selector= 参数。")
+            sel = json.dumps(f'[data-miniyu-ref="{ref}"]')
+            value = self._evaluate(
+                f"(() => {{ const e = document.querySelector({sel}); "
+                f"return e ? (e.innerText || e.textContent || e.value || '') : null; }})()")
+            if value is None:
+                raise LookupError(
+                    f"目标 {target} 指向的元素已不在页面中（可能导航/重排），请重新 browser_find 获取新 handle")
+            return value
         if selector:
             value = self._evaluate(
                 f"(() => {{ const e = document.querySelector({json.dumps(selector)}); "
