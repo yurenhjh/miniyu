@@ -28,6 +28,7 @@ browser_controller.py
 import base64
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -1112,18 +1113,134 @@ class BrowserController:
         except Exception as e:
             return {"error": "eval:" + str(e)[:60]}
 
+    # ------------------------------------------------------------------
+    # P2-5 Phase D：semantic blocks —— 按 DOM 结构区分 assistant 正文(content)
+    #                与推荐 chips/控件(control)，非文本黑名单、非具体 class 名黑名单。
+    # ------------------------------------------------------------------
+    _NOISE_RE = re.compile(
+        r'^\d{1,2}[:：]\d{2}$'                                   # 11:56 / 12:08
+        r'|^(今天|昨天|明天|前天|晚上|上午|下午|早上)\s*\d{1,2}[:：]\d{2}$'
+        r'|^\d{4}[-/年]\d{1,2}([-/月]\d{1,2})?$'                # 2026-09-12
+        r'|^\d{1,2}月\d{1,2}日$'
+    )
+    _BLOCKS_JS = r"""
+(() => {
+  const root = document.querySelector('[data-miniyu-anchor]') || document.body;
+  const vis = (el) => { const r = el.getBoundingClientRect();
+    if (!(r.width > 0 && r.height > 0)) return false;
+    const c = getComputedStyle(el);
+    return c.display !== 'none' && c.visibility !== 'hidden' && c.opacity !== '0'; };
+  const clsTok = (el) => { let c = (el.className && el.className.baseVal !== undefined) ? el.className.baseVal : (el.className || '');
+    return ('' + c).split(/\s+/).filter(Boolean); };
+  // 结构性“建议/推荐引流区”容器：类名含 suggest/recommend 语义 token（稳定前缀，非 hash）
+  const isSuggestTok = (tok) => /^(suggest|recommend|quick)/i.test(tok);
+  const suggestContainers = new Set();
+  for (const el of Array.from(root.querySelectorAll('*')))
+    if (clsTok(el).some(isSuggestTok)) suggestContainers.add(el);
+  const inSuggestionArea = (el) => {
+    for (let p = el; p && p !== document.body; p = p.parentElement)
+      if (suggestContainers.has(p)) return true;
+    return false; };
+  const leaves = [];
+  let idx = 0;
+  for (const el of Array.from(root.querySelectorAll('*'))) {
+    const it = (el.innerText || ''); const tc = (el.textContent || '');
+    if (!it || !vis(el)) continue;
+    if (it.trim() !== tc.trim()) continue;                     // 只取直接持有文本的叶子
+    const t = it.trim().replace(/\s+/g, ' ').replace(/\u00a0/g, ' ');
+    if (!t) continue;
+    const role = el.getAttribute ? (el.getAttribute('role') || '') : '';
+    const c = getComputedStyle(el); const r = el.getBoundingClientRect();
+    const clickable = role === 'button' || role === 'link' || /^(button|radio|checkbox)$/.test(role) ||
+                      el.tagName === 'BUTTON' || el.tagName === 'A' || /pointer/.test(c.cursor);
+    const suggestion = inSuggestionArea(el);
+    const short = t.length <= 40;
+    const control = suggestion || (clickable && short);        // 结构判定：引流区 或 可点短控件
+    leaves.push({ line: t, control, clickable, suggestion, short,
+                  tag: (el.tagName || '').toLowerCase(), role,
+                  rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+                  idx: idx++ });
+  }
+  return leaves;
+})()
+"""
+
+    def semantic_baseline(self, user_message_text=None):
+        """Phase D：以“叶级”文本行构建与 semantic_blocks 一致分节的基线。
+        避免整锚 innerText 把同一段正文拆成多行导致历史漏排除。"""
+        baseline = {}
+        try:
+            st = self.semantic_state()
+            baseline["fingerprint"] = st.get("fingerprint")
+            baseline["semantic_text"] = st.get("semantic_text") or ""
+            baseline["sem_block_count"] = st.get("sem_block_count") or 0
+        except Exception:
+            pass
+        leaf_lines = set()
+        try:
+            for leaf in (self._evaluate(self._BLOCKS_JS) or []):
+                n = re.sub(r"\s+", " ", (leaf.get("line") or "")).strip().replace("\u00a0", " ")
+                if n and not self._NOISE_RE.match(n):
+                    leaf_lines.add(n)
+        except Exception:
+            pass
+        baseline["leaf_lines"] = sorted(leaf_lines)
+        if user_message_text:
+            baseline["user_message_text"] = user_message_text
+        return baseline
+
+    def semantic_blocks(self, baseline=None):
+        """Phase D：把 message-root 内的新增文本叶节点结构化为 blocks。
+
+        - 按 anchor 内 DOM 结构分类：control(推荐 chips/控件) vs content(assistant 正文)；
+        - 过滤掉 baseline 已存在的行与用户自己刚发的文本 → 只保留“新增”块；
+        - 返回 {blocks:[{kind,text,handle,...}], assistant_reply}，
+          assistant_reply = 仅 content 块按 DOM 顺序拼接（纯正文，不含 chips）。
+        """
+        baseline = baseline or {}
+        if not self._ensure_anchor():
+            return {"blocks": [], "assistant_reply": ""}
+        try:
+            leaves = self._evaluate(self._BLOCKS_JS) or []
+        except Exception:
+            leaves = []
+        base_lines = set()
+        for l in (baseline.get("leaf_lines") or []):            # 首选叶级（分节一致）
+            s = re.sub(r"\s+", " ", l).strip().replace("\u00a0", " ")
+            if s:
+                base_lines.add(s)
+        if not base_lines:                                       # 兼容旧 semanc text 基线
+            for l in (baseline.get("semantic_text") or "").split("\n"):
+                s = re.sub(r"\s+", " ", l).strip().replace("\u00a0", " ")
+                if s:
+                    base_lines.add(s)
+        user = re.sub(r"\s+", " ", baseline.get("user_message_text") or "").strip()
+        leaves.sort(key=lambda x: x.get("idx", 0))
+        blocks = []
+        seen = set()
+        for leaf in leaves:
+            line = leaf.get("line") or ""
+            key = line + "|" + str(leaf.get("rect"))
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized = re.sub(r"\s+", " ", line)
+            if normalized in base_lines or (user and normalized == user):
+                continue                                   # 既有历史 / 自己刚发的行
+            if self._NOISE_RE.match(normalized):
+                continue                                   # 时间等噪声行（与 fingerprint 过滤一致）
+            kind = "control" if leaf.get("control") else "content"
+            blocks.append({"kind": kind, "text": line,
+                           "handle": "b%d" % leaf.get("idx", 0),
+                           "tag": leaf.get("tag") or "", "role": leaf.get("role") or "",
+                           "control": bool(leaf.get("control")),
+                           "suggestion": bool(leaf.get("suggestion"))})
+        assistant_reply = "\n".join(b["text"] for b in blocks if b["kind"] == "content")
+        return {"blocks": blocks, "assistant_reply": assistant_reply}
+
     def semantic_delta(self, baseline=None, current=None):
-        """Phase D：current.semantic_text 去掉 baseline 语义行与用户自己刚发的文本 = assistant_candidate。"""
-        current = current or self.semantic_state()
-        if not current or current.get("error"):
-            return ""
-        base_txt = (baseline or {}).get("semantic_text") or ""
-        bset = {x for x in base_txt.split("\n") if x}
-        user = ((baseline or {}).get("user_message_text") or "").strip()
-        out = [l for l in (current.get("semantic_text") or "").split("\n") if l and l not in bset]
-        if user:
-            out = [l for l in out if l != user]
-        return "\n".join(out)
+        """Phase D：纯 assistant 正文（content 块），不含推荐 chips/控件。"""
+        return self.semantic_blocks(baseline=baseline)["assistant_reply"]
 
     def wait_for_changes(self, baseline=None, timeout=60.0, min_stable_rounds=2, interval=1.0, trace=None):
         """Phase C：状态机等待“回复完成”。
@@ -1175,10 +1292,12 @@ class BrowserController:
                     else:
                         stable = 0
                     if stable >= min_stable_rounds:
+                        blocks = self.semantic_blocks(baseline)
                         return {"success": True, "state": "COMPLETED", "started": started,
                                 "loading": False, "delta_detected": True,
                                 "elapsed_ms": int((time.monotonic() - t0) * 1000),
-                                "message_delta": self.semantic_delta(baseline, st),
+                                "message_delta": blocks["assistant_reply"],
+                                "message_blocks": blocks["blocks"],
                                 "fingerprint": fp}
             last_fp = fp
             tick += 1
