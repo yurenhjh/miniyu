@@ -159,6 +159,42 @@ def _wait_delta_evidence(result_s, ok):
     return False
 
 
+def _recovery_metrics(rows, llm_rows):
+    """v1 heuristic：每次失败 action 之后、直到下一个失败 action（或序列结束）之间
+    出现的（去重后）LLM 行数，作为『LLM 被迫重新思考』的轮次代理。
+
+    recovery_depth = Σ 所有失败区间的 llm_rounds；recovery_steps 给出逐失败分段。
+
+    【明确为 heuristic metric，非精确 recovery 事件计数】——action 行 `ok` 已反映工具自身
+    成败（_log_action 写入的是 result.success），但失败 action 之后出现的 LLM 行未必全部
+    是恢复行为（可能包含任务正常收尾）。更精确的显式 recovery 事件见 schema v2
+    （kind='recovery' + cause_step/cause_tool/recovery_rounds），v2 不在此轮实现。
+    """
+    llm_fps = {_llm_fp(r) for r in llm_rows}
+    seen = set()
+    cur = None  # (step, tool) —— 当前失败 action
+    count = 0
+    steps = []
+    for r in rows:
+        k = r.get("kind")
+        if k == "llm":
+            fp = _llm_fp(r)
+            if fp in seen:
+                continue
+            seen.add(fp)
+            if cur is not None:
+                count += 1
+        elif k == "action":
+            if not bool(r.get("ok")):
+                if cur is not None:
+                    steps.append({"cause_step": cur[0], "cause_tool": cur[1], "llm_rounds": count})
+                cur = (r.get("step"), str(r.get("tool") or ""))
+                count = 0
+    if cur is not None:
+        steps.append({"cause_step": cur[0], "cause_tool": cur[1], "llm_rounds": count})
+    return steps, sum(s["llm_rounds"] for s in steps)
+
+
 def aggregate_run_log(path, task_success=None):
     """聚合一条 run_log，返回结构化 Benchmark 统计（dict）。
 
@@ -312,6 +348,8 @@ def aggregate_run_log(path, task_success=None):
 
     # ---- 结果 ----
     verified_success = (task_success is True) and (verification_source == "structured_read")
+    # P2-6+：recovery_depth v1（heuristic，被动推断，不碰 runtime）——失败后额外 LLM 轮次
+    rec_steps, rec_depth = _recovery_metrics(rows, llm)
     summary = {
         "benchmark_valid": benchmark_valid,
         "task_success": task_success,
@@ -346,6 +384,9 @@ def aggregate_run_log(path, task_success=None):
         "coordinate_click": coordinate_click,
         "action_failures": action_failures,
         "llm_recovery_proxy": action_failures,
+        "recovery_depth": rec_depth,
+        "recovery_depth_is_heuristic_v1": True,
+        "recovery_steps": rec_steps,
         "wait_completed": wait["completed"],
         "wait_timeout": wait["timeout"],
         "wait_anchor_lost": wait["anchor_lost"],
@@ -375,8 +416,13 @@ def format_summary(s):
     lines.append("-- browser actions --")
     for k in ("find", "type", "send", "click", "wait", "read", "inspect",
               "som_screenshot", "selector_fallback", "coordinate_click",
-              "action_failures", "llm_recovery_proxy"):
+              "action_failures", "llm_recovery_proxy", "recovery_depth"):
         lines.append("  %-22s %s" % (k, s.get(k)))
+    if s.get("recovery_steps"):
+        lines.append("  -- recovery_steps (heuristic v1) --")
+        for it in s["recovery_steps"]:
+            lines.append("    fail step=%s tool=%s -> %d LLM round(s)"
+                         % (it["cause_step"], it["cause_tool"], it["llm_rounds"]))
     lines.append("-- wait --")
     for k in ("wait_completed", "wait_timeout", "wait_anchor_lost", "wait_loading_stuck", "wait_elapsed_ms"):
         lines.append("  %-22s %s" % (k, s.get(k)))

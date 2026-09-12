@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Local Static Benchmark 页</title>
+<style>
+  /* 本地受控静态页：无外部资源，全部内联，纯离线可跑 */
+  body{font-family:'Segoe UI',system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;color:#222;line-height:1.7}
+  h1{font-size:1.5rem;border-bottom:2px solid #eee;padding-bottom:.4rem}
+  section{background:#fafafa;border:1px solid #eee;border-radius:8px;padding:1rem 1.2rem;margin:1rem 0}
+  section h2{font-size:1.05rem;margin:0 0 .6rem;color:#333}
+  button{background:#2563eb;color:#fff;border:none;padding:.5rem .9rem;border-radius:6px;cursor:pointer;font-size:.95rem}
+  button:hover{background:#1d4ed8}
+  a{color:#2563eb}
+  input,select{font-size:.95rem;padding:.3rem .5rem;border:1px solid #ccc;border-radius:4px}
+  .expandable{display:none;margin-top:.6rem;padding:.6rem .8rem;background:#fff;border:1px dashed #bbb;border-radius:6px}
+  .expandable.open{display:block}
+  #target_duration{color:#0f766e;font-weight:600}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+  <h1>本地静态 Benchmark 页面</h1>
+  <p>用于验证浏览器 Agent 的 DOM / Handle 基础能力：<code>find → type → click → read_targeted</code>。（纯离线、无外部资源、DOM 结构稳定，可被 browser_find / semantic anchor 干净定位。）</p>
+
+  <!-- A1: 可展开文本（"查看更多"按钮展开第二段） -->
+  <section>
+    <h2>1. 可展开文本</h2>
+    <p id="intro">第一段：这里是公司介绍开头的普通文本，内容稳定不变。</p>
+    <div class="expandable" id="expanded_box" data-role="expandable-content">
+      <p id="second_para">第二段（展开后可见）：本段用于验证「点击查看更多后，定向读取新增文本」。请完整读出此句。</p>
+      <p id="third_para">第三段：确认展开区域包含不止一段正文。温度 26℃，城市北京，来源于下方动态页同款占位数据。</p>
+    </div>
+    <button id="btn_more" type="button" data-role="expand-toggle" aria-expanded="false">查看更多</button>
+  </section>
+
+  <!-- A2: 表单控件 -->
+  <section>
+    <h2>2. 表单控件</h2>
+    <label for="user_name">姓名：</label>
+    <input id="user_name" name="user_name" type="text" placeholder="请输入姓名">
+    <br><br>
+    <label for="city_sel">城市：</label>
+    <select id="city_sel" name="city_sel">
+      <option value="">请选择</option>
+      <option value="beijing">北京</option>
+      <option value="shanghai">上海</option>
+      <option value="guangzhou">广州</option>
+    </select>
+    <br><br>
+    <label><input type="checkbox" id="agree" name="agree"> 我同意条款（勾选后）</label>
+    <br><br>
+    <a id="os_link" href="#intro" data-role="inpage-link">跳回顶部简介</a>
+  </section>
+
+  <!-- A3: 长文本区域 -->
+  <section>
+    <h2>3. 长文本区域</h2>
+    <div id="long_text" data-role="long-text">这是一段刻意较长的正文，用于验证 browser_read_text 的定向读取与长内容截断之间的边界行为。句中包含若干稳定的关键词锚点，例如「稳定关键词甲」「稳定关键词乙」「稳定关键词丙」，以及数字占位 26℃ / 北京 / 晴朗。阅读时应能完整提取出三个关键词锚点，而不只是抽出第一句话。</div>
+  </section>
+
+<script>
+  (function () {
+    // 可展开逻辑：保持 DOM 稳定、accessible 状态同步
+    var btn = document.getElementById('btn_more');
+    var box = document.getElementById('expanded_box');
+    btn.addEventListener('click', function () {
+      var open = box.classList.toggle('open');
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  })();
+</script>
+</body>
+</html>
