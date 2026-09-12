@@ -779,13 +779,18 @@ class BrowserController:
                     raise SoMStaleError(
                         f"SoM 会话已失效，编号 {som} 无法使用，请重新 browser_inspect")
                 ref = tgt.ref
+                method = "som"
             elif is_ref(target):
                 # 短 handle 优先解析成内部 ref；旧式长 ref 保持向后兼容直用
-                ref = self._handle_to_ref(target) or target
+                h = self._handle_to_ref(target)
+                method = "handle" if h else "ref"
+                ref = h or target
             else:
                 return self._type_legacy(text, None, target.lstrip("css:"))
             # P2-4：type 也支持一次"工具内确定性 recovery"（见 _type_ref_with_recovery）
-            return self._type_ref_with_recovery(text, ref)
+            ret = self._type_ref_with_recovery(text, ref)
+            ret["method"] = method
+            return ret
         return self._type_legacy(text, index, selector)
 
     def _type_ref_with_recovery(self, text, ref):
@@ -849,7 +854,7 @@ class BrowserController:
         # 兼容旧桩返回 bool（True=聚焦成功，False=目标缺失）
         if state is True or (isinstance(state, dict) and state.get("ok")):
             self._send("Input.insertText", {"text": text})
-            return {"typed": text, "ref": ref, "method": "som"}
+            return {"typed": text, "ref": ref, "method": "ref"}
         reason = state.get("reason") if isinstance(state, dict) else "gone"
         if reason in ("disabled", "readonly", "not_editable"):
             raise LookupError(
