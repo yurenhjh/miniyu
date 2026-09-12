@@ -24,6 +24,10 @@ def _act(tool, ok=True, args=None, result="", elapsed=1.0, step=1):
             "result": result, "elapsed_ms": elapsed * 1000, "step": step}
 
 
+def _run_start(initial_cum):
+    return {"kind": "run_start", "ts": "0", "initial_cum_total_used": initial_cum}
+
+
 def _log(rows):
     fd, path = tempfile.mkstemp(suffix=".jsonl")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -86,6 +90,51 @@ class TestBenchmark(unittest.TestCase):
         os.unlink(p)
         self.assertFalse(s["benchmark_valid"])
         self.assertNotEqual(s["total_tokens"], s["final_cum_total_used"])
+
+    def test_initial_cum_reconciles_offset_counter(self):
+        # P2-6 记账：跨运行继承的计数器偏移（initial=10445）。run_total = final - initial
+        # 恰好等于 sum(per-call)，即使 sum(per-call) != raw final_cum 也应 valid。
+        rows = [
+            _run_start(10445),
+            _llm(16200, 121, 26766, step=1),      # total 16321, cum=10445+16321
+            _llm(16200, 47, 43013, step=2),       # total 16247, cum=26766+16247
+            _llm(16200, 59, 59272, step=3),       # total 16259, cum=43013+16259
+        ]
+        p = _log(rows)
+        s = aggregate_run_log(p)
+        os.unlink(p)
+        self.assertEqual(s["initial_cum_total_used"], 10445)
+        self.assertEqual(s["run_total_tokens"], 59272 - 10445)
+        self.assertEqual(s["total_tokens"], 16321 + 16247 + 16259)
+        self.assertEqual(s["run_total_tokens"], s["total_tokens"])
+        self.assertTrue(s["benchmark_valid"])
+        # 关键：sum(per-call) 并不等于 raw final_cum，但用 run_total 校验后是合法的
+        self.assertNotEqual(s["total_tokens"], s["final_cum_total_used"])
+
+    def test_initial_cum_missing_call_still_invalid(self):
+        # P2-6 记账：即使有 initial 基线，若 run 内确有漏记调用（cum 跳变 > 记录之和）
+        # 仍必须 invalid —— 不能用 initial 掩盖真实缺口。
+        rows = [
+            _run_start(0),
+            _llm(1000, 200, 1200, step=1),
+            _llm(500, 50, 2500, step=2),          # 缺口 1250：1200→2500 跳了 1300，但记录仅 550
+        ]
+        p = _log(rows)
+        s = aggregate_run_log(p)
+        os.unlink(p)
+        self.assertEqual(s["run_total_tokens"], 2500)
+        self.assertEqual(s["total_tokens"], 1200 + 550)
+        self.assertFalse(s["benchmark_valid"])
+
+    def test_run_start_absent_legacy(self):
+        # 无 run_start 头行的旧日志：initial 视为 0，退化为 sum(per-call)==final_cum 旧口径。
+        rows = [_llm(1000, 200, 1200, step=1), _llm(500, 50, 1750, step=2)]
+        p = _log(rows)
+        s = aggregate_run_log(p)
+        os.unlink(p)
+        self.assertEqual(s["initial_cum_total_used"], 0)
+        self.assertEqual(s["run_total_tokens"], 1750)
+        self.assertTrue(s["benchmark_valid"])
 
     def test_whole_page_read_not_verified(self):
         rows = [

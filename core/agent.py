@@ -608,6 +608,10 @@ class Agent:
         # = 57 个底层工具 + 白名单组合技能（app_send_message、send_email 等） + 视觉能力函数 screen_inspect
         openai_tools = self._agent_openai_tools()
 
+        # P2-6 记账：进入 ReAct 循环前捕获 LLM 累计计数器基线，供 benchmark 一致性校验。
+        # 捕获点在 _plan 之后，故 run_total = final - initial 恰好等于循环内已记录的 per-call 之和。
+        self._turn_initial_cum_total_used = int(getattr(self._primary_llm(), "total_tokens_used", 0) or 0)
+
         for step in range(1, self.max_steps + 1):
             self._cur_step = step
             # ---- 1. 调用 LLM ----
@@ -773,6 +777,10 @@ class Agent:
             and bool(_PURE_CALC_RE.search(user_input))
             and not _LOCAL_REF_RE.search(user_input)
         )
+
+        # P2-6 记账：进入流式 ReAct 循环前捕获 LLM 累计计数器基线（不带规划层，即首条记录行）。
+        # run_total = final - initial 恰好等于循环内已记录 per-call 之和。
+        self._turn_initial_cum_total_used = int(getattr(self._primary_llm(), "total_tokens_used", 0) or 0)
 
         for step in range(1, self.max_steps + 1):
             self._cur_step = step
@@ -1292,10 +1300,10 @@ class Agent:
         return last is not None and self._llm_row_fingerprint(last) == self._llm_row_fingerprint(row)
 
     def _finalize_run_consistency(self):
-        """run 结束后自动校验 run_log：sum(per-call total_tokens) 必须等于末次 cum_total_used。
-
-        不一致时向 run_log 追加 benchmark invalid 标记并要求修正，避免下游把
-        含重复/丢失记录的 run 当成有效指标。运行内幂等（只校验一次）。
+        """run 结束后自动校验 run_log：sum(per-call total_tokens) 必须等于
+        (末次 cum - run 初始 cum)。run 初始 cum 在进入 ReAct 循环前捕获，
+        用于消除跨运行继承的 LLM 计数器偏移，避免把历史额度误判为本轮缺口。
+        不一致时向 run_log 追加 benchmark invalid 标记并要求修正；运行内幂等（只校验一次）。
         """
         if getattr(self, "_run_consistency_done", False):
             return
@@ -1305,14 +1313,18 @@ class Agent:
             return
         per_call_sum = sum(int(r.get("total_tokens", 0) or 0) for r in rows)
         final_cum = int(rows[-1].get("cum_total_used", 0) or 0)
-        valid = (per_call_sum == final_cum)
+        initial_cum = int(getattr(self, "_turn_initial_cum_total_used", 0) or 0)
+        run_total = final_cum - initial_cum
+        valid = (per_call_sum == run_total)
         self._append_run_log({
             "kind": "benchmark",
             "valid": bool(valid),
             "llm_calls": len(rows),
             "sum_per_call_total": per_call_sum,
+            "initial_cum_total_used": initial_cum,
             "final_cum_total_used": final_cum,
-            "note": "" if valid else "INVALID: sum(per-call total_tokens) != 末次 cum_total_used，run_log 有重复/丢失记录",
+            "run_total_tokens": run_total,
+            "note": "" if valid else "INVALID: sum(per-call total_tokens) != (末次 cum - run 初始 cum)，run_log 有重复/丢失记录",
         })
 
     def _log_action(self, name: str, args: dict, result: dict, elapsed: float):
@@ -1349,12 +1361,28 @@ class Agent:
             pass
 
     def _ensure_run_log(self) -> str:
-        """惰性创建本次运行的 run_log 文件路径（每次运行一份）。"""
+        """惰性创建本次运行的 run_log 文件路径（每次运行一份）。
+
+        创建时若已捕获 initial_cum（进入 ReAct 循环前的 LLM 计数器基线），
+        则作为首行 kind='run_start' 写入，供下游 benchmark 一致性校验：
+        benchmark_valid = sum(recorded per-call) == final_cum - initial_cum。
+        """
         if not getattr(self, "_run_log", None):
             self._run_log = os.path.join(
                 self._session_artifact_dir(),
                 f"run_log_{int(time.time() * 1000)}.jsonl",
             )
+            initial = getattr(self, "_turn_initial_cum_total_used", None)
+            if initial is not None:
+                try:
+                    with open(self._run_log, "w", encoding="utf-8") as f:
+                        f.write(json.dumps({
+                            "kind": "run_start",
+                            "ts": _now_ms(),
+                            "initial_cum_total_used": int(initial),
+                        }, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
         return self._run_log
 
     def _usage_note(self) -> str:

@@ -159,6 +159,77 @@ class FakeOpenAIClient:
         return
 
 
+class TestAgentBenchmarkAccounting:
+    """P2-6 记账：run_start 头行 + 内嵌 benchmark 一致性（跨运行计数器偏移）"""
+
+    class _UsageLLM:
+        provider = "openai_compatible"
+        supports_vision = False
+        total_tokens_used = 0
+        _last_usage = {}
+
+        def __init__(self, seed=0):
+            self.total_tokens_used = seed
+            self.n = 0
+
+        def chat(self, messages, tools=None):
+            self.n += 1
+            self.total_tokens_used += 1200
+            self._last_usage = {"prompt_tokens": 1000, "completion_tokens": 200,
+                                "total_tokens": 1200}
+            if self.n == 1:
+                return ChatResponse(tool_calls=[{"name": "current_directory", "arguments": {}}],
+                                    finish_reason="tool_calls")
+            return ChatResponse(text="完成", finish_reason="stop")
+
+        def chat_stream(self, messages, tools=None):
+            return iter([])
+
+    def _run_log(self, tmp_path, seed):
+        fake = self._UsageLLM(seed=seed)
+        agent = Agent(
+            config={
+                "llm": {"provider": "openai_compatible"},
+                "agent": {"max_steps": 5, "confirm_high_risk": False, "history_window": 20},
+                "memory": {"storage_dir": str(tmp_path)},
+            },
+        )
+        agent.llm = fake
+        result = agent.run("查一下当前目录")
+        assert result.startswith("完成")
+        # 读取本次 run_log（路径由 run_log 持久化链记录在 agent._run_log）
+        assert agent._run_log, "应生成 run_log"
+        import json
+        rows = []
+        for ln in open(agent._run_log, "r", encoding="utf-8"):
+            ln = ln.strip()
+            if ln:
+                rows.append(json.loads(ln))
+        return rows
+
+    def test_run_start_header_and_valid_benchmark(self, tmp_path):
+        """带初始计数器偏移(10445)：首行为 run_start 头行，benchmark 行 valid=True，
+        run_total = final - initial == sum(recorded)。"""
+        rows = self._run_log(tmp_path, seed=10445)
+        first, last = rows[0], rows[-1]
+        assert first["kind"] == "run_start"
+        assert first["initial_cum_total_used"] == 10445
+        assert last["kind"] == "benchmark"
+        assert last["valid"] is True
+        assert last["initial_cum_total_used"] == 10445
+        assert last["run_total_tokens"] == 2400
+        assert last["sum_per_call_total"] == 2400
+
+    def test_clean_seed_benchmark_valid(self, tmp_path):
+        """无偏移(seed=0)：run_total == final == sum，仍 valid。"""
+        rows = self._run_log(tmp_path, seed=0)
+        first = rows[0]
+        assert first["kind"] == "run_start"
+        assert first["initial_cum_total_used"] == 0
+        assert rows[-1]["valid"] is True
+        assert rows[-1]["run_total_tokens"] == 2400
+
+
 class TestAgentRealLLMIntegration:
     """真实 LLM（openai_compatible）链路行为：system prompt / 流式收尾 / 多工具配对"""
 

@@ -154,6 +154,18 @@ def aggregate_run_log(path, task_success=None):
     final_cum = int(_get(llm[-1], "cum_total_used", 0) or 0) if llm else 0
     token["final_cum_total_used"] = final_cum
 
+    # P2-6 记账：run 初始累计计数器基线（run_start 头行）。用于消除跨运行继承的
+    # cum 偏移：run_total = final_cum - initial_cum 才是本轮真实消耗。
+    initial_cum = 0
+    for r in rows:
+        if r.get("kind") == "run_start":
+            try:
+                initial_cum = max(initial_cum, int(_get(r, "initial_cum_total_used", 0) or 0))
+            except Exception:
+                pass
+    token["initial_cum_total_used"] = initial_cum
+    token["run_total_tokens"] = final_cum - initial_cum
+
     # ---- Browser actions（按工具名，保留原始名，成功/失败/耗时）----
     tools = {}
     selector_fallback = 0
@@ -230,18 +242,24 @@ def aggregate_run_log(path, task_success=None):
     else:
         verification_source = "unknown"
 
-    # ---- 一致性（以去重后的 per-call sum 对比末行 cum） ----
-    benchmark_valid = None
-    note = ""
-    if llm:
-        per_call_sum = token["total_tokens"]
-        benchmark_valid = (per_call_sum == final_cum)
-        if not benchmark_valid:
-            note = "INVALID: sum(per-call total_tokens) != 末次 cum_total_used"
+    # ---- 一致性（以去重后的 per-call sum 对比本轮 run_total） ----
+    env_report = None
     for b in bench_rows:
         if "valid" in b:
-            benchmark_valid = bool(b["valid"])
-            note = str(b.get("note") or note or "")
+            env_report = b
+    benchmark_valid = None
+    note = ""
+    if env_report is not None:
+        # 优先采信 run 内 _finalize_run_consistency 的权威判定（含 initial_cum）。
+        benchmark_valid = bool(env_report["valid"])
+        note = str(env_report.get("note") or "")
+    elif llm:
+        # 旧日志无 run_log 内嵌判定：用本地初始基线（run_start 头行，缺失视为 0，即旧口径）
+        per_call_sum = token["total_tokens"]
+        run_total = token["run_total_tokens"]
+        benchmark_valid = (per_call_sum == run_total)
+        if not benchmark_valid:
+            note = "INVALID: sum(per-call total_tokens) != (末次 cum - run 初始 cum)，见 run_start / 值"
 
     # ---- 结果 ----
     verified_success = (task_success is True) and (verification_source == "structured_read")
@@ -258,6 +276,8 @@ def aggregate_run_log(path, task_success=None):
         "image_tokens": token["image_tokens"],
         "max_prompt_tokens": token["max_prompt_tokens"],
         "max_image_count": token["max_image_count"],
+        "initial_cum_total_used": token["initial_cum_total_used"],
+        "run_total_tokens": token["run_total_tokens"],
         "final_cum_total_used": final_cum,
         "raw_dup_extra": token["raw_dup_extra"],
         "consistency_note": note,
@@ -299,7 +319,7 @@ def format_summary(s):
     lines.append("-- tokens --")
     for k in ("llm_calls", "total_tokens", "prompt_tokens", "completion_tokens",
               "reasoning_tokens", "image_tokens", "max_prompt_tokens", "max_image_count",
-              "final_cum_total_used"):
+              "initial_cum_total_used", "run_total_tokens", "final_cum_total_used"):
         lines.append("  %-22s %s" % (k, s.get(k)))
     lines.append("-- browser actions --")
     for k in ("find", "type", "send", "click", "wait", "read", "inspect",
