@@ -99,6 +99,51 @@ _EDIT_HOST_HELPERS_JS = r"""
   };
 """
 
+# P2-8 read-contract v2：related-content 的确定性推导逻辑（find 与 read_text(mode=content) 共用）。
+# 单一来源，避免 find/read 两处实现分叉。对"标题类目标"（h1-h6，或其下钻 host 的标题祖先），
+# 沿块级 DOM 顺序收集标题之后的正文兄弟容器文本，遇 <= 当前级别的下一标题停止，超过 hard_limit 截断。
+# 仅当标题身下存在可信正文时才返回（不无条件生成）。
+_RELATED_CONTENT_JS = r"""
+  const _relHeading = (el) => {
+    let n = el;
+    while (n) {
+      if (/^H[1-6]$/i.test(n.tagName || '')) break;
+      n = n.parentElement;
+    }
+    if (!n) return null;
+    return { el: n, lv: parseInt(n.tagName[1], 10) };
+  };
+  const _relBody = (h, hardLimit) => {
+    const LIMIT = hardLimit || 2000;
+    const chunks = [];
+    const parent = h.el.parentElement;
+    if (parent) {
+      let sib = h.el.nextElementSibling;
+      while (sib) {
+        const sh = sib.querySelector && sib.querySelector('h1,h2,h3,h4,h5,h6');
+        if (sh && parseInt(sh.tagName[1], 10) <= h.lv) break;
+        const t = (sib.innerText || '').trim();
+        if (t) chunks.push(t);
+        sib = sib.nextElementSibling;
+      }
+    }
+    if (parent) {
+      let sib = parent.nextElementSibling;
+      while (sib && chunks.join('\n').length < LIMIT) {
+        const sh = sib.querySelector && sib.querySelector('h1,h2,h3,h4,h5,h6');
+        if (sh && parseInt(sh.tagName[1], 10) <= h.lv) break;
+        const t = (sib.innerText || '').trim();
+        if (t) chunks.push(t);
+        sib = sib.nextElementSibling;
+      }
+    }
+    const text = chunks.join('\n').trim();
+    if (!text) return null;
+    const truncated = text.length > LIMIT;
+    return { text: text.slice(0, LIMIT), char_count: text.length, truncated };
+  };
+"""
+
 _SNAPSHOT_JS = r"""
 (() => {
   const sel = 'a, button, input, textarea, select, [role="button"], [role="link"], ' +
@@ -238,7 +283,7 @@ _INSPECT_JS = r"""
 # stableId 方案并写 data-miniyu-ref，保证查到的 ref 能直接用于 click/type。
 def _build_find_js(text, role, tag, only_selector, limit):
     import json as _json
-    return "(() => {" + _EDIT_HOST_HELPERS_JS + r"""
+    return "(() => {" + _EDIT_HOST_HELPERS_JS + _RELATED_CONTENT_JS + r"""
   const query = %(query)s;
   const wantRole = %(role)s;
   const wantTag = %(tag)s;
@@ -348,6 +393,18 @@ def _build_find_js(text, role, tag, only_selector, limit):
       in_viewport: r.width > 2 && r.height > 2 &&
         r.bottom >= 0 && r.top <= window.innerHeight &&
         r.right >= 0 && r.left <= window.innerWidth,
+      // P2-8 read-contract v2：仅对"标题类目标"且标题身下有正文时生成 related_content。
+      // relation 恒为 "content"（确定性来源，供日志判断 why-e4-relates-e5）；无正文时为 null。
+      // origin_ref 指向产生相关正文的标题元素自身，供 Python 登记 related handle 后
+      // 由 read_text(..., mode="content") 经 JS 重新确定性推导正文（handle 与正文同寿命）。
+      related_content: (function () {
+        const h = _relHeading(use);
+        if (!h) return null;
+        const rel = _relBody(h, 2000);
+        if (!rel) return null;
+        return { relation: 'content', origin_ref: ref, preview: rel.text.slice(0, 80),
+                 char_count: rel.char_count, truncated: rel.truncated };
+      })(),
     });
   }
   return out;
@@ -651,6 +708,22 @@ class BrowserController:
                 # 必须把既有 handle 回填，否则模型拿不到可用 handle，会绕回 selector 旧路。
                 handle = existing
             it["handle"] = handle
+            # P2-8 read-contract v2：给 related_content 分配独立 handle。
+            # 该 handle 在 registry 中以 "rel:当前元素ref" 登记，read_text(..., mode="content")
+            # 据此经 JS 重新确定性推导正文。related handle 与当前元素同 session/同指纹，
+            # 页面变化后同样失效（stale 契约不变），绝不越过 find 复用作弊路径。
+            rc = it.get("related_content")
+            if isinstance(rc, dict) and rc.get("origin_ref") and rc.get("relation") == "content":
+                rel_ref = "rel:" + rc["origin_ref"]
+                rel_existing = next(
+                    (h for h, r in self._handle_registry.items()
+                     if r["ref"] == rel_ref and r["sid"] == self._activity_sid), None)
+                if rel_existing is None:
+                    self._handle_seq += 1
+                    rel_existing = f"e{self._handle_seq}"
+                    self._handle_registry[rel_existing] = {
+                        "ref": rel_ref, "sid": self._activity_sid, "sig": sig}
+                rc["handle"] = rel_existing
         # 让 handle 恒排最前：模型优先看到短句柄，超长内部 ref 落在后面，不会被截断吞掉。
         return [_front_handle(it) for it in items]
 
@@ -875,12 +948,17 @@ class BrowserController:
         self._send("Input.insertText", {"text": text})
         return {"typed": text, "index": index, "selector": selector, "method": "dom"}
 
-    def read_text(self, selector=None, target=None):
+    def read_text(self, selector=None, target=None, mode=None):
         """读取页面（或指定元素）的文本。
 
         - target=：P2-7 让 read 也消费 Target Handle——优先按短 handle/内部 ref 定位，
           **拒绝把自然语言自猜的 CSS selector 当 target**（契约：find→handle→read 闭环）。
         - selector=：显式按 CSS 选择器定位（旧式路径，向后兼容）。
+        - mode="content"（可选，P2-8 read-contract v2）：显式声明读取标题锚关联的正文区块
+          （标题之后的正文兄弟容器，2000 字符上限）；只接受 related_content.handle。
+        - related handle 自动路由（B）：target=<related_content.handle> 且省略 mode 时，
+          自动走正文区块读取，无需额外传 mode="content"。
+        - 其它 mode / 普通元素的 mode=content 皆明确拒绝（C）。
         - 两者皆空：读取整页正文。
         解析优先级：target(handle) → target(ref) → selector → whole page。
         """
@@ -897,6 +975,38 @@ class BrowserController:
                     "browser_find / browser_snapshot 返回的短 handle（如 e3）应传给 target=；"
                     "不要根据自然语言目标自行猜测或构造 CSS selector。"
                     "确需按选择器定位时，请显式用 selector= 参数。")
+            # P2-8 read-contract v2（第二批 B+C）：related (rel:*) handle 一律走 content resolver。
+            #   B——mode=None 时自动路由到 content read，模型不必"记住"额外传 mode；
+            #   mode="content" 为显式写法，行为与第一批一致；
+            #   C——其它 mode 值明确拒绝，不再把 related handle 误导向成普通 DOM ref 的伪 stale。
+            # 仅对明确登记为 rel:<origin_ref> 的 related handle 生效，普通 handle/ref 完全不受影响。
+            if ref.startswith("rel:"):
+                if mode not in (None, "content"):
+                    raise LookupError(
+                        f"related handle {target} 不支持 mode={mode!r}；"
+                        "请省略 mode 以自动读取其关联正文，或显式使用 mode=\"content\"。")
+                origin = ref[4:]
+                sel = json.dumps(f'[data-miniyu-ref="{origin}"]')
+                value = self._evaluate(
+                    "(()=>{" + _RELATED_CONTENT_JS + "\n"
+                    f"  const el = document.querySelector({sel});"
+                    "  if (!el) return null;"
+                    "  const h = _relHeading(el);"
+                    "  if (!h) return null;"
+                    "  const rel = _relBody(h, 2000);"
+                    "  if (!rel) return null;"
+                    "  return rel.text;"
+                    "})()")
+                if value is None:
+                    raise LookupError(
+                        f"related handle {target} 对应的标题锚已不在页面中或无可读正文"
+                        "（可能导航/重排），请重新 browser_find 获取新 related_content.handle")
+                return value
+            # 普通元素：mode=content 不是它的消费方式，保持明确拒绝（C）。
+            if mode == "content":
+                raise LookupError(
+                    f"mode=content 只接受 find 返回的 related_content.handle，收到非 related 目标 {target!r}；"
+                    "如需读取该元素本体，请省略 mode 走默认读取。")
             sel = json.dumps(f'[data-miniyu-ref="{ref}"]')
             value = self._evaluate(
                 f"(() => {{ const e = document.querySelector({sel}); "

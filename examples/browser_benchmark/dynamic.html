@@ -6,37 +6,45 @@
 <title>Local Dynamic Benchmark 页</title>
 <style>
   /* 本地受控动态页：纯离线、确定性 mock。验证 Anchor → Baseline → Action → Wait for Change → Delta → Targeted Read。
-     不模拟聊天；DOM 结构稳定，仅结果区域文本随查询更新，便于语义增量检测。 */
-  body{font-family:'Segoe UI',system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;color:#222;line-height:1.7}
+     不模拟聊天；DOM 结构稳定，仅结果区域文本随查询更新，便于语义增量检测。
+     P2-7 A2 anchor 前置（A2 规划时落地的 fixture 改造，不改 Core / 不碰 browser_find scope）：
+       - 整体以 <main> 包裹（语义主区域，anchor 发现入口）。
+       - 结果区 #result_log 挂 class="results-thread" + min-height≥240 且可滚动：
+         让 anchor 识别把它当作"可滚动的结果日志容器"(非纯列表)、非 composer，
+         从而达成 reliable 判定；它仍是纯结果/日志语义，不含聊天文案。 */
+  body{font-family:'Segoe UI',system-ui,sans-serif;max-width:680px;margin:2rem auto;padding:0 1rem;color:#222;line-height:1.7}
   h1{font-size:1.5rem;border-bottom:2px solid #eee;padding-bottom:.4rem}
   .card{background:#fafafa;border:1px solid #eee;border-radius:8px;padding:1rem 1.2rem;margin:1rem 0}
   button{background:#2563eb;color:#fff;border:none;padding:.55rem 1rem;border-radius:6px;cursor:pointer;font-size:.95rem}
   button:disabled{background:#9ca3af;cursor:progress}
   input{font-size:.95rem;padding:.35rem .55rem;border:1px solid #ccc;border-radius:4px}
   .loading{color:#b45309}
-  /* 结果区域：固定容器 + 文本节点更新（stable anchor 的基准/增量就在此变化） */
-  #result_box{border-top:1px dashed #ccc;margin-top:.8rem;padding-top:.6rem;white-space:pre-line}
+  /* 结果日志容器：可滚动 + 足够高度 + 语义 class，供 anchor 识别（结果/日志语义，非聊天） */
+  #result_log{min-height:260px;max-height:340px;overflow:auto;border-top:1px dashed #ccc;
+              margin-top:.8rem;padding-top:.6rem;white-space:pre-line}
   [hidden]{display:none!important}
 </style>
 </head>
 <body>
+<main>
   <h1>本地动态 Benchmark 页面</h1>
   <p>输入城市名 → 点「查询」→ 约 1~2 秒加载后更新结果区域。专门验证 <code>wait for change / semantic delta / targeted read</code>，不含聊天语义。（mock 数据内联，无需外网。）</p>
 
   <div class="card">
     <h2>城市天气查询</h2>
     <label for="city_input">城市：</label>
-    <input id="city_input" name="city_input" type="text" value="北京" placeholder="输入城市">
+    <input id="city_input" name="city_input" type="text" value="" placeholder="北京">
     <button id="btn_query" type="button">查询</button>
 
     <div id="status_loading" class="loading" hidden>加载中…</div>
 
-    <div id="result_box" data-role="result-area" aria-live="polite" aria-label="查询结果">
+    <div id="result_log" class="results-thread result-area" aria-live="polite" aria-label="查询结果">
       <span id="result_city">城市：—</span>
       <span id="result_weather">天气：—</span>
       <span id="result_tmp">温度：—</span>
     </div>
   </div>
+</main>
 
 <script>
   (function () {

@@ -1922,7 +1922,7 @@ class ToolRegistry:
             return {**ret, "enter_pressed": True, "wait_hint": "browser_wait_for_change"}
         return {**ret, "enter_pressed": False}
 
-    def browser_read_text(self, selector=None, target=None):
+    def browser_read_text(self, selector=None, target=None, mode=None):
         """
         读取页面（或指定元素）文本
 
@@ -1931,11 +1931,13 @@ class ToolRegistry:
                 或内部 ref 定位该元素并读取其文本。**不要根据自然语言目标自行构造 CSS
                 selector 传给 target**；若非 handle/ref，工具会拒绝并提示。
             selector: CSS 选择器；未指定则读取整个页面正文（旧式路径，向后兼容）。
+            mode: "content" 时仅消费 browser_find 返回的 related_content.handle，经确定性
+                规则读取该标题锚关联的正文区块（read-contract v2）。其余情况忽略。
 
         返回：
             文本内容
         """
-        return self.browser.read_text(selector=selector, target=target)
+        return self.browser.read_text(selector=selector, target=target, mode=mode)
 
     def browser_screenshot(self, output=None):
         """

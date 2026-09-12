@@ -902,7 +902,7 @@ python -m pytest tests/test_agent_read_web.py -v
 - ✅ **整体系统集成** — 第 5 组协调层（审计+RAG）接入 Agent + 设计书 6 个演示场景 Web 实测全通
 - ✅ **最终报告与PPT** — 调研报告 3988 字（PDF 宋体小四）+ 汇报 PPT（18 页）+ 检查点 1~4 全部文档齐全
 
-### Browser Agent Core 演进（P1→P2-6，2026-09-13 冻结）
+### Browser Agent Core 演进（P1→P2-8，2026-09-13 冻结）
 
 确定性 Browser Workflow 分层（每组独立 commit 可回溯）：
 - **P1 观测成本控制** — 历史图片裁剪 + 结构化动作免自动截图 + System Prompt 第 14 条
@@ -910,6 +910,8 @@ python -m pytest tests/test_agent_read_web.py -v
 - **P2-4 Edit Host Resolution** — contenteditable/semantic wrapper 下钻到真实可输入节点
 - **P2-5 Semantic Observation & Wait** — DOM 锚 + semantic_blocks(content/control) + `wait_for_change` + 结构化 message_delta + 推荐 chips 过滤
 - **P2-6 Agent Integration** — 两个高层语义工具（`wait_for_change`/`read_latest_reply`）转 Agent 侧，验证语义 C（evidence quality 而非工具名）
+- **P2-7 Cross-Page Benchmark** — 四类分层隔离评价：A1 Local Static / A2 Local Dynamic（正式主集）、C 豆包（Reference 冻结）、D Public Web Smoke（泛化抽查不进门槛）；新增 `recovery_depth` 指标（落后于失败 action 的额外 LLM rounds）；禁止折总分
+- **P2-8 Read-Contract v2** — D 首跑失败定位到**结构化读取契约缺口**（标题锚块 + 下游正文），`browser_find` 注入 `related_content`，`read_text(rel:handle)` 自动路由确定性重推正文；Qwen3.7-Max 真实性验证 + 全矩阵回归
 
 真实豆包 E2E 冻结基线 **Browser Agent Core v1**：
 ```
@@ -919,7 +921,14 @@ verification_source = structured_read · verification_path = wait_delta
 调用链：find → type(handle,enter) → wait_for_change() → 复用结构化 delta → final（零恢复/零 selector/零 SoM）
 ```
 从最差 38 回合 / 790,014 tokens / 无限恢复循环 → 6 回合 / 84,031 tokens / 单次确定性 browser workflow（**Recovery-driven → Deterministic**）。
-全量单测 **672 passed**。详见 `docs/P2-6-E2E-Benchmark-Report.md`。下一阶段：最小三类跨页面 benchmark（静态/动态/聊天流式）+ `recovery_depth` 指标。
+
+**P2-8 Read-Contract v2 Regression Baseline（2026-09-13 冻结）**：
+```
+A1 Local Static ✅  ·  A2 Local Dynamic ✅（oracle 修正: task_success 绑定 wait_delta.message_delta）
+C Doubao Chat  ✅  ·  D Public Web    ✅（strict oracle: Examples + 正文首句双命中）
+Core regression ❌ 未发现  ·  read-contract 🔒 冻结
+```
+全量单测 **705 passed**。详见 `docs/P2-6-E2E-Benchmark-Report.md`、`docs/P2-7-跨页面-Benchmark-设计.md`、`docs/P2-8-四矩阵回归汇总.md`、`docs/P2-8-mini-design.md`。
 
 ---
 
