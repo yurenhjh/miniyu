@@ -279,3 +279,22 @@ run#1 结束时**没有关闭浏览器**，残留实例锁住**持久化 user_da
   → read_text(target=e2) → structured_read`。
 
 **下一步**：仅当此 driver 修复落地并确认首页加载为最新 fixture 后，才可正式重跑 A1 一次。
+
+### 11.6 A1 正式重跑通过（2026-09-12，run_log_1789206273865.jsonl）—— ✅ 链路闭环
+
+driver 修复后正式重跑，**成功关键路径完整出现**（run_log 实证，非截图指标）：
+```
+step1 find(text=查看更多, role=button) → e2 = eid:btn_more
+step2 click(target=e2)                              # method=handle, clicked, page_changed=true
+step3 find(role=region, text=第二段) → e3 = eid:expanded_box
+step4 read_text(target=e3)                          # 返回区域正文，含「第二段（展开后可见）…」
+```
+指标（全部达标）：`task_success=true / verified_success=true / benchmark_valid=true /
+find=2 / click=1 / read_targeted=1 / som_screenshot=0 / selector_fallback=0 /
+coordinate_click=0 / action_failures=0 / recovery_depth=0 / wait_*=0 /
+verification_source=structured_read / verification_path=read_targeted /
+llm_calls=5 / run_total_tokens=52464`。浏览器 run 后自动 close，无残留实例。
+
+→ **A1（Local Static）正式通过**：验证「基础结构化寻址 + Target Handle + Click + Targeted Read」链路闭环，
+且证明先前的两次失败分别是 (1) read←handle 契约缺口（已修 9919664）与 (2) driver 未关浏览器→旧 DOM（已修 9c0f625），
+均非 Browser Core / find scope / 模型行为缺陷。
