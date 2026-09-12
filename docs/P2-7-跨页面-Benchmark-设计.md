@@ -179,3 +179,70 @@ Phase 2  真实执行 A1 Local Static → A2 Local Dynamic → C 豆包 Regressi
 - `examples/browser_benchmark/dynamic.html`（新增）：A2 动态 demo
 - `examples/browser_benchmark/run_a1.py`（新增）：A1 一次性 driver（起本地静态服务 → 跑真实 Agent → 聚合 run_log → 客观判定 task_success）
 - `docs/P2-7-跨页面-Benchmark-设计.md`（本文档）
+
+---
+
+## 十一、A1 最小修复迭代（2026-09-13，已实现，范围锁定 3 件事）
+
+A1 真实执行（第一轮）结论：**功能性通过 / Benchmark 门槛不通过 / Core 无回归 / 工具契约缺口**——
+根因是 `browser_read_text` **只接受 `selector`、不接受 Target Handle**，
+且提示词 handle-first 只覆盖 click/type。本轮只闭合「find → handle → read」契约，**不碰** wait/semantic_blocks/read_latest_reply/SoM。
+
+### 11.1 代码修改（3 项）
+1. **`browser_read_text` 增加 Target Handle 支持**（`core/browser_controller.py::read_text` + `core/tool_registry.py::browser_read_text`）：
+   - 新增 `target=` 参数；解析优先级 `target(handle) → target(ref) → selector → whole page`。
+   - `target` 为短 handle 或内部 ref 时，解析到 `[data-miniyu-ref="..."]` 元素并读取文本。
+   - **拒绝把自猜的 CSS selector 当 target**（`#section1` 这类 → 明确报错引导）；确需按选择器可显式用 `selector=`。旧 selector/whole-page 行为不变。
+2. **提示词补充 handle-first 覆盖 read + 禁止自猜 selector**（`core/agent.py` 守则 16）：
+   - `click/type/read` 一律优先复用 find 返回的 handle；不要根据自然语言目标自猜 CSS selector；确需 selector 时用显式参数。
+3. **benchmark 语义澄清（不改判定哲学）**：保留 `read_targeted` 字段兼容旧日志。
+
+### 11.2 指标语义（写死口径）
+- `read_targeted`  = `browser_read_text` 带定向目标的**调用次数**（含失败）。
+- `read_ok_targeted` = 定向读取的**成功次数**。**A1 门槛看 `read_ok_targeted >= 1`**，而非 `read_targeted >= 1`。
+- `som_screenshot` = `browser_snapshot` 的**调用次数**（观察性快照），**不等价于**发生了 SoM 视觉点击兜底
+  ——真正的 SoM fallback 交互看 `coordinate_click`。两者在报告中分开解读。
+
+### 11.3 A1 重跑理想路径
+```
+find("查看更多") → e1 → click(e1)
+→ find("第二段") → e2 → read(target=e2) → structured_read
+```
+目标结果：`task_success=true / verified_success=true / benchmark_valid=true / find≥1 / click=1 /
+read_ok_targeted=1 / selector_fallback=0 / coordinate_click=0 / action_failures=0 / recovery_depth=0`。
+
+### 11.4 A1 重跑实测结论（2026-09-12，commit `9919664`）—— 两个阶段分开归因
+
+**A1 Fix #1（read←handle 契约缺口）—— 已解决 ✔**
+- `browser_read_text` 已支持 `target=`（handle/ref），提示词 16 覆盖 read 的 handle-first；
+  新增 6 例 `tests/test_handle_read.py`，全量 478 passed / OK。
+- 独立验证成立：`find("查看更多") → e1 → click(e1)` 全程 handle 走通，`method=handle`。
+- 结论：read-handle 工具契约本身已修复并有独立测试覆盖，作为独立 commit `9919664` 保留。
+
+**A1 新阻断点：find/snapshot observation scope 无法寻址普通文本段（核心设计缺口，未修）**
+- 实测动作序列：
+  ```
+  find(查看更多,button) → e1 → click(e1) ✔
+  find(role=text, 第二段) → []          # 断点
+  find(selector=#p2…) → []
+  browser_snapshot → 无「第二段」
+  read_text(selector=#sec1) → 未找到（自猜 selector）
+  read_text(整页) → 成功 → 终答（只靠 whole-page，task_success 兜住）
+  ```
+- 实测指标：`task_success=true / benchmark_valid=true / verified_success=false /
+  find=3 / click=1 / read_targeted=1 / read_ok_targeted=0 / action_failures=2 /
+  recovery_depth=10 / selector_fallback=1 / coordinate_click=0 / som_screenshot=1 /
+  verification_source=whole_page_read / path=whole_page / llm_calls=11 / run_total_tokens=165124`。
+- 根因（工具可寻址性，非模型违规、非 handle 系统故障）：`browser_find` 的 scope 只扫
+  `a[href], button, input, textarea, select, [role], [onclick], [tabindex], [contenteditable]`
+  （`browser_controller.py` ~L319-322）；`browser_snapshot` 同口径。目标 `<p id="second_para">`
+  是无 role/tabindex/onclick 的纯文本节点，**不在 scope 内** → find 恒空、snapshot 恒无
+  → 该元素**不存在 handle** → `find→handle→read` 无法启动。问题发生在 handle 诞生之前。
+- 定性：这组 `task_success=true / verified_success=false / recovery_depth=10 / 165k tokens`
+  是 P2-7 的**有价值的失败样本**——它证明「任务最终成功」≠「Agent 走了正确结构化路径」。
+
+**结论与边界**：本轮**不进行第二轮 Core 修复**，尤其**不改 `browser_find` scope**——那属于后续
+独立能力迭代（扩大 semantic observation），不能为了救 A1 临时改 Core，否则会把「测试原 Core」
+与「边做 benchmark 边开发新 Core」搅在一起，违背 P2-7 逐层归因目标。下一轮只做 static.html
+Demo 的最小任务目标调整（见下节方案，另输出），使第二次 targeted read 的目标属于当前 find scope，
+从而真正测试 `find → handle → click → find → handle → targeted read`。
