@@ -246,3 +246,36 @@ read_ok_targeted=1 / selector_fallback=0 / coordinate_click=0 / action_failures=
 与「边做 benchmark 边开发新 Core」搅在一起，违背 P2-7 逐层归因目标。下一轮只做 static.html
 Demo 的最小任务目标调整（见下节方案，另输出），使第二次 targeted read 的目标属于当前 find scope，
 从而真正测试 `find → handle → click → find → handle → targeted read`。
+
+### 11.5 A1 第二次重跑（2026-09-12）—— 修正根因：残留浏览器锁档案，非 serving 缓存
+
+**fixture 已按方案调整为可寻址**：static.html 给展开容器加 `role="region"` + `aria-label`
+（不改任何页面逻辑）。**纯 find 隔离验证**通过——对磁盘当前 static.html：
+`find(role=region) / find(role=region,text=第二段) / find(text=第二段) → eid:expanded_box`，
+`find(text=查看更多) → btn_more + expanded_box`；`find(role=region,text=补充正文) → []`
+（`textOf` 优先 `innerText`，可见文本时 `aria-label` 不参与匹配 → 任务应按「文本含第二段」寻址）。
+⇒ **fixture 与 browser_find scope 兼容，role=region 可产生 handle。**
+
+**第二次实测失败**（`read_targeted=0`）：`find(role=region,text=第二段)→[] / find(role=region)→[]`，
+但整页读又能读到「第二段」。**修正后的根因**（用户实测提示 + driver 复现证实）：
+run#1 结束时**没有关闭浏览器**，残留实例锁住**持久化 user_data_dir（%LOCALAPPDATA%/miniyu_edge）
+与 9222 调试端口**；run#2 重新 `browser_launch` 时 attach 到 run#1 遗留浏览器上，页面仍是
+**run#1 加载的旧 static.html（无 role）** → 结构化观察拿不到 role=region（页面上根本没有）→
+`find→handle→read` 在起点即断 → inspect 超时 + whole-page 兜底。**不是 fixture、不是 find scope、
+不是读契约、不是模型行为**——是 **driver/serving 生命周期**：浏览器未在 run 后关闭、档案/端口被占。
+
+**driver 最小修复（commit 见 log，未改 Browser Core / find scope / P2-6 / benchmark 指标）**：
+- 在 `agent.run` 之前，用 `agent.api.execute_tool` 驱动**同一个浏览器**完成
+  `browser_launch → browser_navigate(带 ?bench=<now-ms> cache-bust 的唯一 URL，SimpleHTTPRequestHandler
+  会剥 query 正常 200) → find(role=region) 就绪校验`；任一失败 **直接 abort，绝不带错/旧对象跑 Agent**。
+- `_fixture_ready` 拆解 `execute_tool` 包装返回（`{success,tool,result}`），成功谓词用 `success` + 非空 result。
+- **每次 run 结束必然 `browser_close`**（normal / abort / `--readiness-only` 三路都接），
+  杜绝残留实例锁档案/端口导致的「下次 open 加载不出页面」。
+- `--readiness-only` 只跑就绪链路不含 LLM/Agent（供 driver 自检）。
+- A1 门槛收紧（gtp）：重点看**关键路径**而非固定 find 数——`task_success/
+  verified_success/benchmark_valid=true`、`click(handle)=1`、`read_ok_targeted=1`、
+  `action_failures=0/recovery_depth=0/selector_fallback=0/coordinate_click=0`、`verification_path=read_targeted`。
+  成功路径：`fixture ready → find(查看更多)→e1 → click(e1) → find(role=region,text=第二段)→e2
+  → read_text(target=e2) → structured_read`。
+
+**下一步**：仅当此 driver 修复落地并确认首页加载为最新 fixture 后，才可正式重跑 A1 一次。
