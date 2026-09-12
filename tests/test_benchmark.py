@@ -138,6 +138,24 @@ class TestBenchmark(unittest.TestCase):
         self.assertEqual(s["verification_source"], "structured_read")
         self.assertFalse(s["verified_success"])
 
+    def test_read_latest_reply_is_structured_read(self):
+        """P2-6：browser_read_latest_reply 成功 → 判定 structured_read，verified_success=True。
+        （这是第二轮 E2E 的真实读法：用新工具而非整页 browser_read_text。）"""
+        rows = [
+            _llm(100, 10, 110, step=1),
+            _act("browser_wait_for_change", True, {}, result="COMPLETED", step=1),
+            _act("browser_read_latest_reply", True, {}, result='{"success":true,"text":"你好","source":"structured_read"}', step=2),
+            _llm(100, 10, 220, step=2),
+        ]
+        p = _log(rows)
+        s = aggregate_run_log(p, task_success=True)
+        os.unlink(p)
+        self.assertEqual(s["read_latest_reply"], 1)
+        self.assertEqual(s["read_ok_latest_reply"], 1)
+        self.assertEqual(s["verification_source"], "structured_read")
+        self.assertTrue(s["verified_success"])
+        self.assertEqual(s["wait_completed"], 1)
+
     def test_empty_log(self):
         p = _log([])
         s = aggregate_run_log(p)

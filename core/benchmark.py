@@ -28,6 +28,8 @@ import re
 # --- 工具类别判定 ---
 _WAIT_TOOLS = {"browser_wait", "browser_wait_for_change"}
 _READ_TOOLS = {"browser_read_text"}
+# P2-6：结构化读取最新回复的工具 —— 成功即证明 structured_read
+_STRUCTURED_READ_TOOLS = {"browser_read_latest_reply"}
 _CLICK_TOOLS = {"browser_click", "mouse_click"}
 _COORD_TOOLS = {"click_at", "mouse_click"}
 _INSPECT_TOOLS = {"browser_inspect"}
@@ -158,7 +160,8 @@ def aggregate_run_log(path, task_success=None):
     coordinate_click = 0
     read_targeted = 0
     read_whole_page = 0
-    read_ok = {"targeted": 0, "whole_page": 0}
+    read_structured_latest = 0
+    read_ok = {"targeted": 0, "whole_page": 0, "structured_latest": 0}
     wait = {"wait_calls": 0, "completed": 0, "timeout": 0, "anchor_lost": 0,
             "loading_stuck": 0, "failed": 0, "elapsed_ms": 0}
     action_failures = 0
@@ -207,9 +210,16 @@ def aggregate_run_log(path, task_success=None):
                 read_whole_page += 1
                 if ok:
                     read_ok["whole_page"] += 1
+        elif name in _STRUCTURED_READ_TOOLS:
+            # P2-6：browser_read_latest_reply 本身就是结构化读取，成功即 structured_read
+            read_structured_latest += 1
+            if ok:
+                read_ok["structured_latest"] += 1
 
-    # ---- Verification source ----
-    if read_ok["targeted"] > 0:
+    # ---- Verification source（P2-6 结构化读取最高优先） ----
+    if read_ok["structured_latest"] > 0:
+        verification_source = "structured_read"
+    elif read_ok["targeted"] > 0:
         verification_source = "structured_read"
     elif read_ok["whole_page"] > 0:
         verification_source = "whole_page_read"
@@ -257,7 +267,8 @@ def aggregate_run_log(path, task_success=None):
         "send": tools.get("browser_type", {}).get("calls", 0),  # type 常带 press_enter 完成发送
         "click": sum(v["calls"] for k, v in tools.items() if k in _CLICK_TOOLS),
         "wait": wait["wait_calls"],
-        "read": read_targeted + read_whole_page,
+        "read": read_targeted + read_whole_page + read_structured_latest,
+        "read_latest_reply": read_structured_latest,
         "inspect": tools.get("browser_inspect", {}).get("calls", 0),
         "som_screenshot": tools.get("browser_snapshot", {}).get("calls", 0),
         "selector_fallback": selector_fallback,
@@ -273,6 +284,7 @@ def aggregate_run_log(path, task_success=None):
         "read_whole_page": read_whole_page,
         "read_ok_targeted": read_ok["targeted"],
         "read_ok_whole_page": read_ok["whole_page"],
+        "read_ok_latest_reply": read_ok["structured_latest"],
     }
     return summary
 
@@ -298,7 +310,8 @@ def format_summary(s):
     for k in ("wait_completed", "wait_timeout", "wait_anchor_lost", "wait_loading_stuck", "wait_elapsed_ms"):
         lines.append("  %-22s %s" % (k, s.get(k)))
     lines.append("-- read / verification --")
-    for k in ("read_targeted", "read_whole_page", "read_ok_targeted", "read_ok_whole_page"):
+    for k in ("read_targeted", "read_whole_page", "read_latest_reply",
+              "read_ok_targeted", "read_ok_whole_page", "read_ok_latest_reply"):
         lines.append("  %-22s %s" % (k, s.get(k)))
     lines.append("-- per-tool detail --")
     for name in sorted(s.get("tools", {}).keys()):
