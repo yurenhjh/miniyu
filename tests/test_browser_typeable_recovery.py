@@ -29,6 +29,7 @@ class _Fake(BrowserController):
         self._inserts = []
         self.type_state = {}          # ref -> {"ok":bool,"reason":str|None}
         self.find_canned = []
+        self.resolve_host = {}        # ref -> 下钻 edit host 的新 ref（P2-4），None 表示无宿主
 
     def _send(self, method, params=None):
         if method == "Input.insertText":
@@ -39,7 +40,9 @@ class _Fake(BrowserController):
         expr = str(expression).strip()
         if expr == "window.devicePixelRatio":
             return 1.0
-        if "e.disabled === true" in expr:             # type 输入守卫查询
+        # type 输入守卫查询：''reason: 'gone' ' 只出现在 _type_by_ref 的状态 JS 里
+        # （find 的 JS 现含 "use.disabled === true"，不能用 "e.disabled" 做标记）
+        if "reason: 'gone'" in expr:
             m = re.search(r'data-miniyu-ref=\\?"([^"\\]+)\\"?', str(expression))
             ref = m.group(1) if m else ""
             return dict(self.type_state.get(ref, {"ok": False, "reason": "gone"}))
@@ -47,6 +50,10 @@ class _Fake(BrowserController):
             return [dict(x) for x in self.find_canned]
         if "data-agentic-idx" in expr:                # snapshot 桩
             return [dict(x) for x in self.snapshot_canned]
+        if "_miniyuResolveHost(el)" in expr:          # P2-4 下钻 edit host 桩
+            m = re.search(r'data-miniyu-ref=\\?"([^"\\]+)\\"?', str(expression))
+            ref = m.group(1) if m else ""
+            return self.resolve_host.get(ref) or None
         return None
 
 

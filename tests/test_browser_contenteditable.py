@@ -34,6 +34,7 @@ class _Fake(BrowserController):
         self.type_state = {}          # ref -> {"ok":bool,"reason":str|None}
         self.snapshot_canned = []
         self.find_canned = []
+        self.resolve_host = {}        # ref -> 下钻 edit host 的新 ref（P2-4）
 
     def _send(self, method, params=None):
         if method == "Input.insertText":
@@ -44,7 +45,9 @@ class _Fake(BrowserController):
         expr = str(expression).strip()
         if expr == "window.devicePixelRatio":
             return 1.0
-        if "e.disabled === true" in expr:             # P2-1 输入守卫查询
+        # type 输入守卫查询：''reason: 'gone' ' 只出现在 _type_by_ref 状态 JS 里，
+        # 避免把 find 的 "use.disabled === true" 误判成守卫分支
+        if "reason: 'gone'" in expr:
             # _type_by_ref 用 json.dumps 转义选择器，属性引号可能是 \" 形式，需兼容
             m = re.search(r'data-miniyu-ref=\\?"([^"\\]+)\\"?', str(expression))
             ref = m.group(1) if m else ""
@@ -53,6 +56,10 @@ class _Fake(BrowserController):
             return [dict(x) for x in self.snapshot_canned]
         if "const wantRole" in expr:                   # browser_find 桩
             return [dict(x) for x in self.find_canned]
+        if "_miniyuResolveHost(el)" in expr:           # P2-4 下钻 edit host 桩
+            m = re.search(r'data-miniyu-ref=\\?"([^"\\]+)\\"?', str(expression))
+            ref = m.group(1) if m else ""
+            return self.resolve_host.get(ref) or None
         return None
 
     @property

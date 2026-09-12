@@ -1149,6 +1149,7 @@ class Agent:
 
     def _with_reminder(self, text: str) -> str:
         """给最终回复附上产物提醒（仅在确实产生过产物时追加）"""
+        self._finalize_run_consistency()
         r = self._artifact_reminder()
         note = self._usage_note()
         tail = (r + "\n").rstrip() + ("\n\n" + note if note else "")
@@ -1267,8 +1268,52 @@ class Agent:
             "char_count": obs["chars"],
             "cum_total_used": total_used,
         }
+        # run_log 去重（P2-4）：同一个 LLM request 的 token 快照 (step, cum, total, in, out)
+        # 只会有一份；若流式 finally 与内联记录对同一 request 双写，就保留第一条，保证
+        # sum(per-call total_tokens) == 末行 cum_total_used，避免污染后续 benchmark。
+        if self._is_llm_row_duplicate(row):
+            return
         self._turn_usage_trace.append(row)
         self._append_run_log(row)
+
+    def _llm_row_fingerprint(self, row: dict):
+        return (int(row.get("step", 0) or 0), int(row.get("cum_total_used", 0) or 0),
+                int(row.get("total_tokens", 0) or 0), int(row.get("prompt_tokens", 0) or 0),
+                int(row.get("completion_tokens", 0) or 0))
+
+    def _is_llm_row_duplicate(self, row: dict) -> bool:
+        """row 是否与 _turn_usage_trace 中最近一条 llm 行指纹重复（同一请求重复写入）。"""
+        trace = getattr(self, "_turn_usage_trace", None) or []
+        last = None
+        for r in reversed(trace):
+            if r.get("kind") == "llm":
+                last = r
+                break
+        return last is not None and self._llm_row_fingerprint(last) == self._llm_row_fingerprint(row)
+
+    def _finalize_run_consistency(self):
+        """run 结束后自动校验 run_log：sum(per-call total_tokens) 必须等于末次 cum_total_used。
+
+        不一致时向 run_log 追加 benchmark invalid 标记并要求修正，避免下游把
+        含重复/丢失记录的 run 当成有效指标。运行内幂等（只校验一次）。
+        """
+        if getattr(self, "_run_consistency_done", False):
+            return
+        self._run_consistency_done = True
+        rows = [r for r in getattr(self, "_turn_usage_trace", None) or [] if r.get("kind") == "llm"]
+        if not rows:
+            return
+        per_call_sum = sum(int(r.get("total_tokens", 0) or 0) for r in rows)
+        final_cum = int(rows[-1].get("cum_total_used", 0) or 0)
+        valid = (per_call_sum == final_cum)
+        self._append_run_log({
+            "kind": "benchmark",
+            "valid": bool(valid),
+            "llm_calls": len(rows),
+            "sum_per_call_total": per_call_sum,
+            "final_cum_total_used": final_cum,
+            "note": "" if valid else "INVALID: sum(per-call total_tokens) != 末次 cum_total_used，run_log 有重复/丢失记录",
+        })
 
     def _log_action(self, name: str, args: dict, result: dict, elapsed: float):
         """记录一次工具/技能操作：时间、名称、参数、成功与否、耗时（kind='action'）。"""

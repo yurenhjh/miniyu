@@ -38,6 +38,66 @@ from pathlib import Path
 # 向可交互元素注入索引标记并返回压缩元素清单（Agent 的"眼睛"）。
 # 目标选择含 contenteditable / role=textbox，并把 contenteditable 富文本框作为一等可输入目标。
 # 输出保留 index 兼容旧调用，同时提供 ref / role / name / editable 供模型优先用 ref 定位。
+# P2-4：统一的"真正可输入宿主"解析 JS 助手（仅命名空间 _miniyu*），供 find 下钻与 browser_type
+# 内部 recovery 共用。核心不变式：semantic wrapper（如 div role=textbox）可能自身不可输入，
+# 真正的编辑宿主是内部子节点；handle 必须收敛到真实宿主，而不能挂在 wrapper 上。
+_EDIT_HOST_HELPERS_JS = r"""
+  const _miniyuTypingInput = (el) => {
+    if (el.tagName.toLowerCase() !== 'input') return false;
+    return !['hidden', 'file', 'submit', 'reset', 'button', 'checkbox', 'radio']
+      .includes((el.getAttribute('type') || '').toLowerCase());
+  };
+  const _miniyuVisible = (el) => {
+    const _cs = getComputedStyle(el);
+    const _r = el.getBoundingClientRect();
+    return _cs.display !== 'none' && _cs.visibility !== 'hidden' && _r.width > 1 && _r.height > 1;
+  };
+  const _miniyuEditableTag = (el) => {
+    const _t = el.tagName.toLowerCase();
+    if (_t === 'textarea') return true;
+    if (_t === 'input') return _miniyuTypingInput(el);
+    if (el.isContentEditable === true) return true;
+    return false;
+  };
+  const _miniyuUsableHost = (el) => {
+    if (!el || el.nodeType !== 1 || el.disabled === true) return null;
+    if (el.readOnly === true) return null;
+    if (!_miniyuEditableTag(el) || !_miniyuVisible(el)) return null;
+    return el;
+  };
+  const _miniyuResolveHost = (root) => {
+    if (!root || root.nodeType !== 1) return null;
+    const _self = _miniyuUsableHost(root);
+    if (_self) return _self;                       // 自身即可编辑，直接返回自身
+    // 固定优先级（P2-4）：wrapper 内先找 textarea → 再 input → 最后 contenteditable，
+    // 不能只看 document 顺序，否则富文本 container 里的首个节点会错误抢占。
+    const _ta = root.querySelector('textarea');
+    if (_ta) { const _h = _miniyuUsableHost(_ta); if (_h) return _h; }
+    const _inp = root.querySelector('input');
+    if (_inp) { const _h = _miniyuUsableHost(_inp); if (_h) return _h; }
+    const _ce = root.querySelector('[contenteditable="true"]');
+    if (_ce) { const _h = _miniyuUsableHost(_ce); if (_h) return _h; }
+    // 兜底：兼容 contenteditable="" / "plaintext-only" 等非标准写法，全量扫
+    const _all = root.querySelectorAll('textarea, input, [contenteditable]');
+    for (const _el of _all) { const _h = _miniyuUsableHost(_el); if (_h) return _h; }
+    return null;
+  };
+  const _miniyuStableId = (el) => {
+    if (el.id) return 'id:' + el.id;
+    const _p = [];
+    let _n = el;
+    while (_n && _n.nodeType === 1) {
+      const _par = _n.parentElement;
+      if (!_par) break;
+      const _same = Array.from(_par.children).filter((c) => c.tagName === _n.tagName);
+      const _pos = _same.indexOf(_n);
+      _p.unshift(_n.tagName.toLowerCase() + ':' + _pos);
+      _n = _par;
+    }
+    return (_p.join('/') || el.tagName.toLowerCase()).slice(0, 80);
+  };
+"""
+
 _SNAPSHOT_JS = r"""
 (() => {
   const sel = 'a, button, input, textarea, select, [role="button"], [role="link"], ' +
@@ -177,8 +237,7 @@ _INSPECT_JS = r"""
 # stableId 方案并写 data-miniyu-ref，保证查到的 ref 能直接用于 click/type。
 def _build_find_js(text, role, tag, only_selector, limit):
     import json as _json
-    return r"""
-(() => {
+    return "(() => {" + _EDIT_HOST_HELPERS_JS + r"""
   const query = %(query)s;
   const wantRole = %(role)s;
   const wantTag = %(tag)s;
@@ -264,19 +323,24 @@ def _build_find_js(text, role, tag, only_selector, limit):
   for (const el of scope) {
     if (out.length >= limit) break;
     if (!matches(el)) continue;
-    const sid = stableId(el).replace(/[^A-Za-z0-9_:\-]/g, '_');
+    // P2-4：semantic target 可能只是 wrapper，真实编辑宿主在其内部子节点。
+    // 统一解析到真正可输入的 host，handle/ref 指向 host，而不是 wrapper。
+    const host = _miniyuResolveHost(el);
+    const use = host || el;
+    const sid = stableId(use).replace(/[^A-Za-z0-9_:\-]/g, '_');
     const ref = 'e' + sid;
-    el.setAttribute('data-miniyu-ref', ref);
-    const r = el.getBoundingClientRect();
+    use.setAttribute('data-miniyu-ref', ref);
+    const r = use.getBoundingClientRect();
     out.push({
       ref: ref,
-      tag: el.tagName.toLowerCase(),
-      role: roleOf(el),
-      name: textOf(el).slice(0, 80),
-      editable: isEditable(el),
-      input_kind: inputKind(el),
-      visible: visibleOf(el),
-      disabled: el.disabled === true,
+      tag: use.tagName.toLowerCase(),
+      role: roleOf(el) || roleOf(use),
+      name: (textOf(use) || textOf(el)).slice(0, 80),
+      editable: !!host || isEditable(el),
+      input_kind: inputKind(use),
+      visible: visibleOf(use),
+      disabled: use.disabled === true,
+      edit_host: use !== el,
       in_viewport: r.width > 2 && r.height > 2 &&
         r.bottom >= 0 && r.top <= window.innerHeight &&
         r.right >= 0 && r.left <= window.innerWidth,
@@ -694,8 +758,47 @@ class BrowserController:
                 ref = self._handle_to_ref(target) or target
             else:
                 return self._type_legacy(text, None, target.lstrip("css:"))
-            return self._type_by_ref(text, ref)
+            # P2-4：type 也支持一次"工具内确定性 recovery"（见 _type_ref_with_recovery）
+            return self._type_ref_with_recovery(text, ref)
         return self._type_legacy(text, index, selector)
+
+    def _type_ref_with_recovery(self, text, ref):
+        """按 ref 输入，内部做一次工具内确定性 recovery（P2-4）。
+
+        当 ref 指向的是 semantic wrapper（自身 browser_type 判定 not_editable）时，
+        工具自动把目标下钻到内部真正可输入的 edit host 并重试一次；成功则 typed=true，
+        不再把这次确定性失败抛回 LLM 让它多花一个回合去思考。
+        """
+        try:
+            return self._type_by_ref(text, ref)
+        except LookupError as e:
+            if "not_editable" not in str(e):
+                raise
+            host_ref = self._resolve_type_host_ref(ref)
+            if host_ref and host_ref != ref:
+                try:
+                    return self._type_by_ref(text, host_ref)
+                except LookupError:
+                    raise e
+            raise
+
+    def _resolve_type_host_ref(self, ref):
+        """给定（可能指向 wrapper 的）ref，返回内部真正可输入的 edit host 的新 ref；
+        无下钻目标返回 None。把 host 也写入 data-miniyu-ref，供 _type_by_ref 复用。"""
+        attr = f'[data-miniyu-ref="{ref}"]'
+        js = (
+            "(() => {"
+            + _EDIT_HOST_HELPERS_JS
+            + f"const el = document.querySelector({json.dumps(attr)}); "
+            f"if (!el) return null; "
+            f"const host = _miniyuResolveHost(el); "
+            f"if (!host || host === el) return null; "
+            f"const sid = _miniyuStableId(host).replace(/[^A-Za-z0-9_:\\-]/g, '_'); "
+            f"const nr = 'e' + sid; host.setAttribute('data-miniyu-ref', nr); return nr; "
+            "})()"
+        )
+        res = self._evaluate(js)
+        return res if isinstance(res, str) and res else None
 
     def _type_by_ref(self, text, ref):
         """按 ref 实时定位并聚焦输入元素，再插入文本。
