@@ -1196,6 +1196,9 @@ class BrowserController:
         - 过滤掉 baseline 已存在的行与用户自己刚发的文本 → 只保留“新增”块；
         - 返回 {blocks:[{kind,text,handle,...}], assistant_reply}，
           assistant_reply = 仅 content 块按 DOM 顺序拼接（纯正文，不含 chips）。
+        - 判定规则（与 _BLOCKS_JS 输出的结构事实一致，语义不变）：
+          control = 位于 suggestion 容器 || (可点击 && 短文本)。
+          规则留在 Python 侧便于加回归测试；真实豆包验证通过后保持该规则不变。
         """
         baseline = baseline or {}
         if not self._ensure_anchor():
@@ -1229,11 +1232,12 @@ class BrowserController:
                 continue                                   # 既有历史 / 自己刚发的行
             if self._NOISE_RE.match(normalized):
                 continue                                   # 时间等噪声行（与 fingerprint 过滤一致）
-            kind = "control" if leaf.get("control") else "content"
+            is_control = bool(leaf.get("suggestion")) or (bool(leaf.get("clickable")) and bool(leaf.get("short")))
+            kind = "control" if is_control else "content"
             blocks.append({"kind": kind, "text": line,
                            "handle": "b%d" % leaf.get("idx", 0),
                            "tag": leaf.get("tag") or "", "role": leaf.get("role") or "",
-                           "control": bool(leaf.get("control")),
+                           "control": is_control,
                            "suggestion": bool(leaf.get("suggestion"))})
         assistant_reply = "\n".join(b["text"] for b in blocks if b["kind"] == "content")
         return {"blocks": blocks, "assistant_reply": assistant_reply}
