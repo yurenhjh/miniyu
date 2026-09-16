@@ -1,6 +1,6 @@
-# Group4 - miniyu 桌面 AI 助手（Tool Registry + OS Skills + Agent 编排层）
+# Group4 - miniyu 桌面 AI 助手（Tool Registry + OS Skills + Agent 编排层 + 浏览器 Deterministic Agent）
 
-## 完整桌面 AI 助手（LLM 驱动，function-calling 调用 61 个系统工具 + 26 个技能）
+## 完整桌面 AI 助手（LLM 驱动，function-calling 调用 65 个系统工具 + 26 个技能）
 
 ---
 
@@ -57,6 +57,10 @@ bash run_miniyu_web.sh           # Windows：run_miniyu_web.bat
 
 **语音输入浏览器要求：一键语音（🎤）用浏览器原生 Web Speech API**，仅 **Chrome / Edge** 支持；Windows 上**推荐 Edge**（走微软语音服务、国内可用），Chrome 走谷歌服务大陆常连不上。其余浏览器自动隐藏该按钮、不影响文字输入。
 
+> **近期变更（2026-09-16 · 最终）**
+> - **浏览器 Agent 深化收官：从"视觉猜点"收敛为"全结构化寻址的确定性执行"**。第二段工作把"LLM 驱动浏览器"做成了通用而经济的确定性子系统：① **P2 元素定位可靠性**——`browser_find` 返回 **Target Handle（短句柄）** + Edit Host 解析 + stale→recovery=find，杜绝"猜 selector"；② **P2-5 语义等待**——`browser_wait_for_change` / `browser_read_latest_reply`（Anchor 自愈 + semantic_blocks，WAITING→GENERATING→COMPLETED 只发一次、delta 为真增量）；③ **P2-6 Agent 集成层 + E2E Benchmark 封板**——真实"豆包对话"从旧基线 **38 次 LLM / 79.0 万 token** 收敛到**确定性 6 次 LLM / 84,031 token**（`benchmark_valid` / `verified_success` / `verification_path=wait_delta`，零 selector fallback / SoM / recovery loop）；④ **P2-7/8 跨页面四类 Benchmark（A1 本地静态 / A2 本地动态 / C 豆包聊天 / D 真实公共网页）**——在真实 MDN 页暴露、单层定位并修复了**结构化读取契约缺口（read-contract v2：browser_find 返回 related_content + read_text(mode=content)，标题锚与下游正文绑定）**，最终 **A1/A2/C/D 四矩阵全 PASS、零回归**，冻结为 P2-8 regression baseline。
+> - **当前最终状态**：**65 个注册工具（含 15 个浏览器工具）+ 26 个技能 + 705 项测试（38 个测试文件）全部通过**。浏览器 Agent 深化全链路证据见 `docs/P2-7-跨页面-Benchmark-设计.md`、`docs/P2-8-四矩阵回归汇总.md`；综合总结见新增 `docs/第4组最终报告.md`（另附 `.html` / `.pdf` 双版）+ 各既有第4组报告的 `.pdf` 版，均可一键复现。
+
 > **近期变更（2026-09-11）**
 > - **安全机制实测 + 危险指令硬拦截接入 Agent 执行链（任意授权档位均生效）**：Web 界面（真实 LLM qwen3.7-flash，最低授权 base 档）实测危险操作——`rm -rf /`、`format` 被直接拒绝；`shutdown` 修复前只弹确认窗，**修复后直接拒绝**（`core/agent.py` `_sandbox_guard` 在确认门前无条件执行：run_command 等带 cmd/command 参数的工具命中 `DANGEROUS_ACTIONS` 直接返回拒绝并审计，杜绝"确认弹窗被误点"的社交工程绕过；拦截**不看授权档位 base/advanced/full**，即使 `coordinator.enabled=false` 也会构造独立沙箱兜底，保证 shutdown/rm -rf/format 等破坏性指令在任何情况下都不会被执行；`DANGEROUS_ACTIONS` 覆盖 Stop-Computer/Restart-Computer/Remove-Item/del /f /s/rd /s /q/diskpart/reg delete 等 Windows 变体）。新增 `tests/test_agent.py::TestSandboxGuard` 19 例（含 coordinator 关闭回归），**558 全绿**；实测截图入 `docs/evidence/security_test_*.png`，记录见 `docs/第4组安全机制验证记录.md`。
 > - **README 收尾更新**：第 4 周计划 4 项全部标记完成 ✅（工具签名/权限控制/整体集成/最终报告与PPT）；全量测试 **558** 更新（10. 运行测试 / 13. 技术特点 / 14. 跨平台兼容）。
@@ -90,7 +94,7 @@ bash run_miniyu_web.sh           # Windows：run_miniyu_web.bat
 
 # 2. 项目简介
 
-本项目为课程设计 **第4组：miniyu 桌面 AI 助手**（LLM 驱动，function-calling 调用 61 个系统工具 + 26 个技能），底层以"工具注册 + OS Skills（Tool Registry + OS Skills）"作为统一系统能力接口。
+本项目为课程设计 **第4组：miniyu 桌面 AI 助手**（LLM 驱动，function-calling 调用 65 个系统工具 + 26 个技能），底层以"工具注册 + OS Skills（Tool Registry + OS Skills）"作为统一系统能力接口。
 
 本模块负责为 Agentic OS 提供统一的系统能力接口，包括：
 
@@ -180,7 +184,7 @@ Skill（高级任务能力）
 - 不依赖真实文件系统
 - 支持跨组并行开发
 - 保证接口稳定一致
-- 覆盖全部61个工具和24个技能
+- 覆盖全部65个工具和26个技能
 
 ## 3.5 工具描述 Schema（ToolSpec）
 
@@ -266,7 +270,7 @@ miniyu 是第4组独立实现的 AI 桌面助手，通过 LLM 驱动的 Agent �
     │   └── FailoverClient（自动降级：主 API → 本地 Ollama → 确定性脑；
     │       支持运行时热切换模型 + force_local 手动本地模式）
     ↓
- OSServiceAPI（61 个工具 + 26 个技能）
+ OSServiceAPI（65 个工具 + 26 个技能）
     ↓
  实际执行
 ```
@@ -351,10 +355,9 @@ group4_tools_os_skills/
 │
 ├── mock/                          # Mock模块（跨组联调用）
 │   ├── __init__.py                # Mock统一入口 + MockOSServiceAPI
-│   ├── mock_tools.py              # Mock版工具注册表（61个工具）
+│   ├── mock_tools.py              # Mock版工具注册表（65个工具）
 │   └── mock_skills.py             # Mock版技能库（26个技能）
-│
-├──  tests/                         # 单元测试（共 590 个，全部通过）
+│   ├── tests/                         # 单元测试（共 705 个，全部通过）
 │   ├── __init__.py
 │   ├── test_tool_registry.py      # ToolRegistry测试（92个：全部工具+新工具+异常+别名+错误码）
 │   ├── test_skills.py             # SkillLibrary测试（43个：基础+扩展+搜索+Agent）
@@ -831,7 +834,7 @@ registry.call("browser_close", {})
 # 10. 运行测试
 
 ```bash
-# 运行所有测试（共 583 个）
+# 运行所有测试（共 705 个）
 python -m pytest tests/ -v
 
 # 运行单个测试文件
@@ -946,7 +949,7 @@ Core regression ❌ 未发现  ·  read-contract 🔒 冻结
 
 | 系统 | 状态 | 说明 |
 |------|------|------|
-| Windows 11 | ✅ 通过 | 583个测试全部通过，Demo正常运行 |
+| Windows 11 | ✅ 通过 | 705个测试全部通过，Demo正常运行 |
 | Ubuntu/Linux | ✅ 兼容 | 使用 `pathlib` / `shutil` 等跨平台库，无需修改 |
 | macOS | ✅ 预期兼容 | 内部测试未进行，理论兼容 |
 
